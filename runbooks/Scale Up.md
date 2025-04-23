@@ -26,6 +26,7 @@ To update the instance type (with higher resources) follow the steps below:
         * traces - increase the partitions of the kf_traces, kf_traces_errors and kf_traces_metrics
         * metrics - increase the partitions of the kf_metrics and kf_metrics_rollup
         * for some services such as, logs-parser, etc. number of replicas should be increased as well.
+     * increasing the memory / heap sizes for various services such as, pinot server realtime, ingester, etc. For components such as, logs-parser whose replica count is increased, memory increase may not be necessary.
     * Get the customer value yaml file reviewed by the CS as well as engineering team. This file can be kept ready and reviewed in anticipation of expected volume increase.
 ### Execution      
 - [ ] Increase the capacity of the AWS or GCP node pool by changing the instance type (or creating a new node pool with higher instance type and deleting old node pool). The kloudfuse installation requires all nodes to be of the same type and using the same set of taints and labels.
