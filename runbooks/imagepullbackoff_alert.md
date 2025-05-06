@@ -1,4 +1,4 @@
-# Alert: Pod experiencing magePullBackOff Error
+# Alert: Pod experiencing imagePullBackOff Error
 
 ## Summary
 
