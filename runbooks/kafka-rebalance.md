@@ -73,7 +73,11 @@ unset JMX_PORT
 
 ### ✅ Step 3: Create a Topics JSON File
 
-You’ll need a JSON file listing the topics to rebalance. Create a file called `topics.json`:
+You’ll need a JSON file listing the topics to rebalance. Create a file called `topics.json` with the list of topics from the list command:
+
+```bash
+cat > > /bitnami/kafka/topics.json
+```
 
 ```json
 {
@@ -98,7 +102,7 @@ Now generate a plan using the list of broker IDs you got earlier:
 
 ```bash
 kafka-reassign-partitions.sh \
-  --bootstrap-server <broker-host>:9092 \
+  --bootstrap-server :9092 \
   --generate \
   --topics-to-move-json-file topics.json \
   --broker-list "100,101,102,103" > reassign-plan.json
@@ -126,7 +130,9 @@ Open and review `reassign-plan.json`. It should look like:
 }
 ```
 
-The above command will print out the `Current partition replica assignment` and `Proposed partition reassignment configuration`. Ignore the proposed output. Only the Current partition replica assignment is needed. Format the `Current partition replica assignment` in standard JSON format and make sure it looks reasonable and distributes partitions across all brokers.
+The above command will print out the `Current partition replica assignment` and `Proposed partition reassignment configuration`. Ignore the proposed output. Only the `Proposed partition reassignment` is needed. 
+
+Don't save the files in `/tmp` directory as that directory gets cleared up on pod restart. Instead save it in `/bitnami/kafka` directory (which is on pvc) Save the `Current partition replica assignment` to `topics.current.json` file Save the `Proposed partition reassignment` to `topics.balanced.json` file. Format the `Proposed partition replica assignment` in standard JSON format and make sure it looks reasonable and distributes partitions across all brokers.
 
 ---
 
@@ -136,9 +142,9 @@ Apply the plan:
 
 ```bash
 kafka-reassign-partitions.sh \
-  --bootstrap-server <broker-host>:9092 \
+  --bootstrap-server :9092 \
   --execute \
-  --reassignment-json-file reassign-plan.json
+  --reassignment-json-file /bitnami/kafka/topics.balanced.json
 ```
 
 ---
@@ -149,9 +155,9 @@ You can verify the reassignment is in progress or completed:
 
 ```bash
 kafka-reassign-partitions.sh \
-  --bootstrap-server <broker-host>:9092 \
+  --bootstrap-server :9092 \
   --verify \
-  --reassignment-json-file reassign-plan.json
+  --reassignment-json-file /bitnami/kafka/topics.balanced.json
 ```
 
 ---
