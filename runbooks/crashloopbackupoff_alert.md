@@ -43,7 +43,9 @@ The Readiness probe or Liveness Probe failing if the application does not respon
 
 ## Kfuse Specific Errors
 
-### Unable to retrieve some image pull secrets (kfuse-image-pull-credentials)
+### Any Pod: Unable to retrieve some image pull secrets (kfuse-image-pull-credentials)
+
+Do a `kubectl describe po <pod_name> and check the events section
 
 ```
 Events:
@@ -71,5 +73,42 @@ kubectl create secret docker-registry kfuse-image-pull-credentials \
 
 The token.json is the credentials giving to you to access the above registry.
 
+### Pod: kfuse-kafka-topic-creation
 
+do a `kubectl logs <pod_name>`  Check for this error message.
+
+```
++ /opt/bitnami/kafka/bin/kafka-topics.sh --alter --bootstrap-server kafka:9092 --partitions 2 --topic logs_ingest_topic
+[2025-05-07 21:38:03,619] WARN [AdminClient clientId=adminclient-1] The DescribeTopicPartitions API is not supported, using Metadata API to describe topics. (org.apache.kafka.clients.admin.KafkaAdminClient)
+Error while executing topic command : Topic currently has 3 partitions, which is higher than the requested 2.
+[2025-05-07 21:38:03,671] ERROR org.apache.kafka.common.errors.InvalidPartitionsException: Topic currently has 3 partitions, which is higher than the requested 2.
+ (org.apache.kafka.tools.TopicCommand)
+```
+
+It means that in the values.yaml you change the number of partions down from what is currently configured.  You cannot go down, only up.  Look for this section for the number of partions
+
+```
+    - name: logs_ingest_topic
+      partitions: 2 # Changed from 3, will cause the above error
+      replicationFactor: 1
+```
+You will need to update the partion to the same or a higher number than it was previously.  You will also need to delete this job before you can do another helm upgrade.
+
+`helm delete job kfuse-kafka-topic-creation`
+
+### Pod: kfuse-set-tag-hook-pinot
+
+do a `kubectl logs <pod_name>`  Check for this error message.
+
+```
+Setting tag for realtime server '0'
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to pinot-controller port 9000 after 8 ms: Couldn't connect to server
+```
+
+It means that the realtime server has not completed its configuration yet.  After other jobs have run getting the Pinot realtime server up it should complete.
+
+### Pod:
         
