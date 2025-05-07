@@ -110,5 +110,4 @@ curl: (7) Failed to connect to pinot-controller port 9000 after 8 ms: Couldn't c
 
 It means that the realtime server has not completed its configuration yet.  After other jobs have run getting the Pinot realtime server up it should complete.
 
-### Pod:
         
