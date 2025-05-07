@@ -76,7 +76,7 @@ unset JMX_PORT
 You’ll need a JSON file listing the topics to rebalance. Create a file called `topics.json` with the list of topics from the list command:
 
 ```bash
-cat > > /bitnami/kafka/topics.json
+cat > /bitnami/kafka/topics.json
 ```
 
 ```json
