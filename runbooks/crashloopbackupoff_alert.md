@@ -20,26 +20,56 @@ The application is unable start and instead exits and the Pod is not able to sta
 
 Possible configuration errors are,
 
-* Runtime dependencies are missing
-* configuration files (via ConfigMaps) or
+* Runtime dependencies are missing (*for example:* var, run, secrets or service account files are missing)
+* configuration files (via ConfigMaps)
 * incorrect environment variables
 
 These could keep the application from running and therefor the Pod from starting.
 
 ### Probes are Misconfigured
 
-The Readiness probe or Liveness Probe failing if the application does not respond within the specified timeframe.
-
-### InitContainer fails to complete
+The Readiness probe or Liveness Probe failing if the application does not respond within the specified timeframe.  If the time period is too small it might be prematurely failing.
 
 ## Troubleshooting
 
-Check logs: Use kubectl logs <name-of-pod> to check the logs of the container. This is often the most direct way to diagnose the issue causing the crashes.
-Inspect events: Use kubectl describe pod <name-of-pod> to see events for the Pod, which can provide hints about configuration or resource issues.
-Review configuration: Ensure that the Pod configuration, including environment variables and mounted volumes, is correct and that all required external resources are available.
-Check resource limits: Make sure that the container has enough CPU and memory allocated. Sometimes, increasing the resources in the Pod definition can resolve the issue.
-Debug application: There might exist bugs or misconfigurations in the application code. Running this container image locally or in a development environment can help diagnose application specific issues.
+### General Approaches for Troubleshootin
 
-### Testing with a Manu Run
+* Inspect events: Use kubectl describe pod <name-of-pod> to see Pod events.  This is a good first place to check to see why Kubernetes cannot start the Pod.  If it is a specific Kubernetes issue it should show up here.
+* Check resource limits: Kubernetes assigns containers CPU and memory. If the application needs more resources than what Kubernetes allocated it can prevent it from starting. Increase the resources in the Pod definition can resolve the issue.
+* Check logs: Use kubectl logs <name-of-pod> to check the container logs. If there are application or service errors, this is the most likely place you will the messages for it.
+* Review configuration: Applications will often depend upon environment variables and mounted volumes for configuring the application.  If Secrets or volumes cannot be mounted, the application might not be able to start.
+* File Permission Issues: Another possible configuration problem can be the application is attempting to write files to a Read-Only file system.
+* Debug application: There might be bug in the application itself preventing it from starting. You can run this container locally or in a development environment to help diagnose these types of issues.
 
-### Restart the Pod
+## Kfuse Specific Errors
+
+### Unable to retrieve some image pull secrets (kfuse-image-pull-credentials)
+
+```
+Events:
+  Type     Reason                           Age                     From               Message
+  ----     ------                           ----                    ----               -------
+  Normal   Scheduled                        4m27s                   default-scheduler  Successfully assigned kfuse/pinot-events-table-creation-std6v to gke-dev-gcp-spot-pool-2-28700bac-pkg5
+  Warning  FailedMount                      4m26s                   kubelet            MountVolume.SetUp failed for volume "kube-api-access-bd8r9" : failed to fetch token: serviceaccounts "default" is forbidden: node requested token bound to a pod scheduled on a different node
+  Warning  FailedMount                      4m26s                   kubelet            MountVolume.SetUp failed for volume "kfuse-pinot-events-schema" : failed to sync configmap cache: timed out waiting for the condition
+  Normal   Created                          3m39s (x3 over 4m24s)   kubelet            Created container: pinot-add-table-json
+  Normal   Started                          3m38s (x3 over 4m24s)   kubelet            Started container pinot-add-table-json
+  Warning  BackOff                          3m14s (x3 over 3m54s)   kubelet            Back-off restarting failed container pinot-add-table-json in pod pinot-events-table-creation-std6v_kfuse-steve-runbook(6e6cdee9-3288-443d-8df4-eecf0559ac04)
+  Warning  FailedToRetrieveImagePullSecret  2m59s (x10 over 4m25s)  kubelet            Unable to retrieve some image pull secrets (kfuse-image-pull-credentials); attempting to pull the image may not succeed.
+  Normal   Pulled                           2m59s (x4 over 4m24s)   kubelet            Container image "us.gcr.io/mvp-demo-301906/pinot:1.3.0-c2f04c5edf" already present on machine
+```
+
+If you see the `Unable to retrieve some image pull secrets (kfuse-image-pull-credentials)` It means that secret is missing from the namespace. You will need to add the secret object
+running this command.
+
+```
+kubectl create secret docker-registry kfuse-image-pull-credentials \
+        --namespace='kfuse' --docker-server 'us.gcr.io' --docker-username _json_key \
+        --docker-email 'container-registry@mvp-demo-301906.iam.gserviceaccount.com' \
+        --docker-password=''"$(cat token.json)"''
+```
+
+The token.json is the credentials giving to you to access the above registry.
+
+
+        
