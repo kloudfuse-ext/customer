@@ -31,16 +31,17 @@ To add additional nodes follow the steps below:
 - [ ] Increase the capacity of the AWS or GCP node pool with additional nodes. It is better to expand existing node pool instead of creating new one as kloudfuse installation requires all nodes to be of the same type and using the same set of taints and labels.
 - [ ] Once the new kubernetes node addition is complete and nodes are ready to run pods, do the helm upgrade using the updated customer values yaml using the same version as currently installed. This is to avoid accidentally doing software upgrade in addition to scaling the kloudfuse cluster.
 - [ ] Verify that all pods and services are up and running and evenly distributed among the old and the new nodes. You can use the control plane’s overview page to confirm that kloudfuse stack is running fine.
-- [ ] Because we added additional partitions to existing topics, we need to do kafka rebalance so that new kafka brokers pick up equal share of old partitions from the kafka brokers running on the old nodes.
-- [ ] Existing pinot segments on the pinot offline servers need to be rebalanced so that they are equally distributed among the old and the new pinot offline server replicas.
+- [ ] Because we added additional partitions to existing topics, we need to do [kafka rebalance](kafka-rebalance.md) so that new kafka brokers pick up equal share of old partitions from the kafka brokers running on the old nodes.
 
 
 ## Validation
 1. Monitor the kloudfuse control plane to ensure that kloudfuse stack is running fine - all pods and services should be up and running, pinot segment status should all be GOOD, etc.
 2. It might take some time for kafka consumer lags for various topics to be reduced to its normal as the new capacity has to deal with data queued in kafka as well as new incoming data. The consumer lags for various topics should be monitored at the individual topic and partition level to ensure that all partitions are consuming properly.
-3. Checkin the customer value yaml file in the appropriate customer git repo.
-4. Verify that the control plane alerts are no longer firing
-5. Control plane overview status is all GREEN
-6. Individual stream specific control plane dashboards are all GREEN
-7. Kloudfuse UI does not show any lag and recent data is visible
-8. Verify that alert rules configured by the customer on the kloudfuse cluster are in “Healthy” state.
+3. Existing pinot segments on the pinot offline servers will automatically be rebalanced so that they are equally distributed among the old and the new pinot offline server replicas.
+4. While kafka partition and pinot segment rebalance process is ongoing, expect increase CPU and IO load.
+5. Checkin the customer value yaml file in the appropriate customer git repo.
+6. Verify that the control plane alerts are no longer firing
+7. Control plane overview status is all GREEN
+8. Individual stream specific control plane dashboards are all GREEN
+9. Kloudfuse UI does not show any lag and recent data is visible
+10. Verify that alert rules configured by the customer on the kloudfuse cluster are in “Healthy” state.
