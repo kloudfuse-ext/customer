@@ -120,12 +120,10 @@ def monitor_plan():
 def rebalance_pinot():
     print("rebalancing pinot tables...")
     print("..NOTE: This can take a while to finish.  So completion is not confirmed in this script.\n")
-    failed = False
     for table in PINOT_TABLES:
         curl_cmd = PINOT_REBALANCE.format(table)
         result = subprocess.run(curl_cmd, shell=True, capture_output=True, text=True )
         if result.returncode != 0:
-            failed = True
             print("..Failed to execute rebalancing for {}".format(table))
             print("..Run this command manually\n\n{}\n".format(curl_cmd))
         else:
