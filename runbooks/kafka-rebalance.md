@@ -160,6 +160,8 @@ kafka-reassign-partitions.sh \
   --reassignment-json-file /bitnami/kafka/topics.balanced.json
 ```
 
+Re-run the above command to check the status of reassignment. This will provide the information about all the partitions and if the rebalance for is in progress or completed.
+
 ---
 
 ## ⚠️ Best Practices
