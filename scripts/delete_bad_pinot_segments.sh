@@ -3,10 +3,9 @@
 # create a dir for the table and run it from within that dir;
 # it will dump a bunch of status files in case things go wrong we can use to track
 # be careful on which controller you are connecting to
-
+set -x
 CONTROLLER=localhost:9000
 TABLE=""
-ONLY_BAD_SEGMENTS=true
 
 while :; do
     case "$1" in
@@ -14,12 +13,8 @@ while :; do
             TABLE="$2"
             shift 2
             ;;
-        --all-segments)
-            ONLY_BAD_SEGMENTS=false
-            shift
-            ;;
         -h|--help)
-            echo "Usage: $0 [-t|--table <table_name>] [--all-segments <all_segments>] [-h|--help]"
+            echo "Usage: $0 [-t|--table <table_name>] [-h|--help]"
             exit 0
             ;;
         "") # No more arguments
@@ -47,21 +42,15 @@ echo "Total segments:"
 cat "${TABLE}.new" | jq '.[].segmentName' | wc -l
 
 # Filter out good segments
-if [ "$ONLY_BAD_SEGMENTS" = true ]; then
-    cat "${TABLE}.new" | jq '.[] | select(.segmentStatus != "GOOD") | .segmentName' | sed s'/"//'g > "${TABLE}.delete"
-    echo "Deleting !GOOD segments:"
-    wc -l "${TABLE}.delete"
-else 
-    cat "${TABLE}.new" | jq '.[] | .segmentName' | sed s'/"//'g > "${TABLE}.delete"
-    echo "Deleting all segments:"
-    wc -l "${TABLE}.delete"
-fi
+cat "${TABLE}.new" | jq '.[] | select(.segmentStatus != "GOOD") | .segmentName' | sed s'/"//'g > "${TABLE}.bad"
+echo "Deleting !GOOD segments:"
+wc -l "${TABLE}.bad"
 
 echo -n "Press enter to proceed or ^C to cancel"
 read ans
 
 # Fetch segment status
-for seg in `cat "${TABLE}.delete"`; do
+for seg in `cat "${TABLE}.bad"`; do
     curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/$seg/metadata?columns=\*" > "${seg}.status"
     cat "${seg}.status"
     #read ans
