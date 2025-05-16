@@ -5,7 +5,41 @@
 # be careful on which controller you are connecting to
 
 CONTROLLER=localhost:9000
-TABLE=kf_metrics_rollup_FIXME
+TABLE=""
+ONLY_BAD_SEGMENTS=true
+
+while :; do
+    case "$1" in
+        -t|--table)
+            TABLE="$2"
+            shift 2
+            ;;
+        --all-segments)
+            ONLY_BAD_SEGMENTS=false
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [-t|--table <table_name>] [--all-segments <all_segments>] [-h|--help]"
+            exit 0
+            ;;
+        "") # No more arguments
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+        *) # Unexpected extra argument
+            echo "Unexpected argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$TABLE" ]; then
+    echo "Error: Table name is required. Use -t or --table to specify the table name."
+    exit 1
+fi
 
 # Get a list of segments for a table
 curl -s "http://${CONTROLLER}/tables/${TABLE}_REALTIME/segmentsStatus" > "${TABLE}.new"
@@ -13,15 +47,21 @@ echo "Total segments:"
 cat "${TABLE}.new" | jq '.[].segmentName' | wc -l
 
 # Filter out good segments
-cat "${TABLE}.new" | jq '.[] | select(.segmentStatus != "GOOD") | .segmentName' | sed s'/"//'g > "${TABLE}.bad"
-echo "Deleting !GOOD segments:"
-wc -l "${TABLE}.bad"
+if [ "$ONLY_BAD_SEGMENTS" = true ]; then
+    cat "${TABLE}.new" | jq '.[] | select(.segmentStatus != "GOOD") | .segmentName' | sed s'/"//'g > "${TABLE}.delete"
+    echo "Deleting !GOOD segments:"
+    wc -l "${TABLE}.delete"
+else 
+    cat "${TABLE}.new" | jq '.[] | .segmentName' | sed s'/"//'g > "${TABLE}.delete"
+    echo "Deleting all segments:"
+    wc -l "${TABLE}.delete"
+fi
 
 echo -n "Press enter to proceed or ^C to cancel"
 read ans
 
 # Fetch segment status
-for seg in `cat "${TABLE}.bad"`; do
+for seg in `cat "${TABLE}.delete"`; do
     curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/$seg/metadata?columns=\*" > "${seg}.status"
     cat "${seg}.status"
     #read ans
