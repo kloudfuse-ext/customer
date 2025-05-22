@@ -265,39 +265,70 @@ class UploadDashboard(DashboardManager):
             dashboard_folder_name=dashboard_folder_name
         )
 
+    def _replace_datasource_uids(self, dashboard_json, ds_uid_map):
+        """Recursively replace datasource UIDs in dashboard JSON as per requirements."""
+        def process(obj):
+            if isinstance(obj, dict):
+                # Check for datasource fields
+                if "datasource" in obj:
+                    ds = obj["datasource"]
+                    # If it's a dict with 'uid' key
+                    if isinstance(ds, dict) and "uid" in ds:
+                        uid = ds["uid"]
+                        if isinstance(uid, str):
+                            if uid.startswith("${DS_") and uid.endswith("}"):
+                                ds_name = uid[5:-1].lower()
+                                if ds_name in ds_uid_map:
+                                    obj["datasource"]["uid"] = ds_uid_map[ds_name]
+                            elif uid == "":
+                                # Default to kfusedatasource
+                                if "kfusedatasource" in ds_uid_map:
+                                    obj["datasource"]["uid"] = ds_uid_map["kfusedatasource"]
+                # Recurse into all dict values
+                for k, v in obj.items():
+                    obj[k] = process(v)
+            elif isinstance(obj, list):
+                return [process(i) for i in obj]
+            return obj
+        return process(dashboard_json)
+
     def process_args(self, single_file, directory, multi_directory):
+        ds_uid_map = self.gc._get_datasource_uid_map()
+        log.info("ds_uid_map={}", ds_uid_map)
         if single_file:
-            self._create_dashboard_from_one_file(single_file)
+            self._create_dashboard_from_one_file(single_file, ds_uid_map)
         elif directory:
-            self._create_dashboards_from_dir(directory)
+            self._create_dashboards_from_dir(directory, ds_uid_map)
         elif multi_directory:
-            self._create_dashboards_from_root_dir(multi_directory)
+            self._create_dashboards_from_root_dir(multi_directory, ds_uid_map)
         else:
             log.error("Invalid arguments provided.")
             exit(1)
     
-    def _create_dashboard_from_one_file(self, single_file):
+    def _create_dashboard_from_one_file(self, single_file, ds_uid_map):
         content, err = self._valid_single_file_arg(single_file)
         if err:
             exit(err)
+        content = self._replace_datasource_uids(content, ds_uid_map)
         self.gc.upload_dashboard(content, self.dashboard_folder_name)
 
-    def _create_dashboards_from_dir(self, directory, folder_name=None):
+    def _create_dashboards_from_dir(self, directory, ds_uid_map, folder_name=None):
         for file in os.listdir(directory):
             if file.endswith(".json"):
                 content, err = self._valid_single_file_arg(os.path.join(directory, file))
                 if err:
                     exit(err)
+                content = self._replace_datasource_uids(content, ds_uid_map)
                 if folder_name:
                     self.gc.upload_dashboard(content, folder_name)
                 else:
                     self.gc.upload_dashboard(content, self.dashboard_folder_name)
 
-    def _create_dashboards_from_root_dir(self, multi_directory):
+    def _create_dashboards_from_root_dir(self, multi_directory, ds_uid_map):
         for folder in os.listdir(multi_directory):
             folder_path = os.path.join(multi_directory, folder)
             if os.path.isdir(folder_path):
-                self._create_dashboards_from_dir(folder_path, folder)
+                self._create_dashboards_from_dir(folder_path, ds_uid_map, folder)
 
 class DownloadDashboard(DashboardManager):
     def __init__(self, grafana_client: GrafanaClient, dashboard_folder_name: str):
