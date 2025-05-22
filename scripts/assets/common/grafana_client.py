@@ -279,6 +279,14 @@ class GrafanaClient:
         
         return existing_alerts, True
     
+    def _get_datasource_uid_map(self):
+        """Fetch all datasources and return a map of name (lowercase) to UID."""
+        datasources, success = self._http_get_request_to_grafana("/api/datasources")
+        if not success:
+            log.error("Failed to fetch datasources from Grafana")
+            return {}
+        return {ds["name"].lower(): ds["uid"] for ds in datasources if "name" in ds and "uid" in ds}
+    
     def upload_dashboard(self, dashboard_data, folder_name):
         """Uploads a single dashboard to the specified Grafana folder."""
         created, folder_id = self._create_alert_folder_if_not_exists(folder_name)
