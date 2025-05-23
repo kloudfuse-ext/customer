@@ -22,6 +22,10 @@ the default conditions, though more many supported by the cluster vendor.
 
 If  a pod is not in a Ready state, it will not be able to run an new pods.  The verify this you can describe the node and check the Conditions section
 
+### DiskPressure
+
+[This article](https://www.groundcover.com/blog/kubernetes-disk-pressure) goes over the "DiskPresure" condition and how to fix them.
+
 ```
 kubernetes describe node <NODE_NAME>
 
@@ -33,6 +37,10 @@ Conditions:
   FrequentKubeletRestart                            False   Wed, 14 May 2025 16:13:31 -0700...
   Ready                                             True    Wed, 14 May 2025 16:15:49 -0700...
 ```
+
+### Condition: ContainerRuntimeProblem
+
+
 
 ## Unschedulable Nodes
 
@@ -53,6 +61,8 @@ It can be uncordoned by running,
 ```
 kubectl uncordon <NODE_NAME>
 ```
+
+
 
 
 You can refer to more details about [Unschedulable Nodes here](https://www.datadoghq.com/blog/debug-kubernetes-pending-pods/#unschedulable-nodes)
