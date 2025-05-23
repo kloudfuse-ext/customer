@@ -22,10 +22,6 @@ the default conditions, though more many supported by the cluster vendor.
 
 If  a pod is not in a Ready state, it will not be able to run an new pods.  The verify this you can describe the node and check the Conditions section
 
-### DiskPressure
-
-[This article](https://www.groundcover.com/blog/kubernetes-disk-pressure) goes over the "DiskPresure" condition and how to fix them.
-
 ```
 kubernetes describe node <NODE_NAME>
 
@@ -38,9 +34,9 @@ Conditions:
   Ready                                             True    Wed, 14 May 2025 16:15:49 -0700...
 ```
 
-### Condition: ContainerRuntimeProblem
+### DiskPressure
 
-
+[This article](https://www.groundcover.com/blog/kubernetes-disk-pressure) goes over the "DiskPresure" condition and how to fix them.
 
 ## Unschedulable Nodes
 
