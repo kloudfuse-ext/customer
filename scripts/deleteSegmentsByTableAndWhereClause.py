@@ -57,14 +57,14 @@ def validate_tables(args) -> None:
 
 def extract_segments(response_data: Dict[str, Any]) -> List[str]:
     """Extract segment names from the Pinot query response"""
-    segments = set()
+    segments = []
     
     if 'resultTable' in response_data and 'rows' in response_data['resultTable']:
         for row in response_data['resultTable']['rows']:
-            if isinstance(row, list) and row and row[0].startswith('kf_'):
-                segments.add(row[0])
+            if isinstance(row, list) and row:
+                segments.append(row[0])
     
-    return sorted(list(segments))
+    return sorted(segments)
 
 def get_table_types(host: str, port: str, table_name: str, debug: bool = False) -> List[str]:
     """Get the types (OFFLINE/REALTIME) for a given table"""
@@ -123,7 +123,7 @@ def process_table(args, table_name: str) -> Tuple[int, int]:
     
     print(f"  Found table in formats: {', '.join(table_types)}")
     
-    sql_query = f'SELECT $segmentName FROM "{table_name}" WHERE {args.where}'
+    sql_query = f'SELECT DISTINCT $segmentName FROM "{table_name}" WHERE {args.where}'
     print(f"  Executing query: {sql_query}")
     
     query_url = f"http://{args.host}:{args.broker_port}/query/sql"
