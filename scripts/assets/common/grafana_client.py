@@ -158,8 +158,7 @@ class GrafanaClient:
                 # If the rule group response is empty, add all alerts from alert_data_json
                 rule_group_response["rules"] = alert_data_json["rules"]
         else:
-            log.info("Rule group not found, creating new one.")
-            log.info("Alert data={0}".format(alert_data_json))
+            log.debug("Rule group not found, using the alert json as is.")
             rule_group_response = alert_data_json
 
         path = f"/api/ruler/grafana/api/v1/rules/{folder_uid}"
