@@ -6,7 +6,7 @@ import requests
 import sys
 from typing import List, Dict, Any, Set, Tuple
 
-def make_request(url: str, method: str = 'GET', json_data: Dict = None, params: Dict = None, timeout: int = 5) -> requests.Response:
+def make_request(url: str, method: str = 'GET', json_data: Dict = None, params: Dict = None, timeout: int = 5, debug: bool = False) -> requests.Response:
     """Make HTTP request with error handling"""
     try:
         if method == 'GET':
@@ -14,6 +14,9 @@ def make_request(url: str, method: str = 'GET', json_data: Dict = None, params: 
         elif method == 'POST':
             response = requests.post(url, json=json_data, timeout=timeout)
         elif method == 'DELETE':
+            if debug:
+                print(f"Making DELETE request to: {url}")
+                print(f"Query parameters: {json.dumps(params, indent=2)}")
             response = requests.delete(url, params=params, timeout=timeout)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
@@ -87,16 +90,17 @@ def delete_segments_for_type(args, table_name: str, table_type: str, segments: L
     """Delete segments for a specific table type"""
     print(f"\n  Processing {table_type} segments for table: {table_name}")
     
-    delete_url = f"http://{args.host}:{args.port}/segments/{table_name}_{table_type}"
-    params = {'type': table_type}
-    for segment in segments:
-        params['segments'] = segment
+    delete_url = f"http://{args.host}:{args.port}/segments/{table_name}"
+    params = {
+        'type': table_type,
+        'segments': segments
+    }
     
     if args.debug:
         print(f"    Delete URL: {delete_url}")
-        print(f"    Parameters: {params}")
+        print(f"    Query parameters: {json.dumps(params, indent=2)}")
     
-    response = make_request(delete_url, method='DELETE', params=params, timeout=30)
+    response = make_request(delete_url, method='DELETE', params=params, timeout=30, debug=args.debug)
     
     if args.debug:
         print(f"    Response status code: {response.status_code}")
