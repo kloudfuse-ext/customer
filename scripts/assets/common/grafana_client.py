@@ -137,28 +137,29 @@ class GrafanaClient:
         alert_data_json = json.loads(alert_data_json)
         group_name = alert_data_json["name"]
         rule_group_response, success = self._http_get_request_to_grafana(path=f"/api/ruler/grafana/api/v1/rules/{folder_uid}/{group_name}")
-        if not success:
-            raise Exception(f"Failed to get rule group: {group_name}")
+        if success:
         
-        # If rule group response rules list is not empty process rule group
-        if rule_group_response["rules"]:
-            # Create a map of alert names to their corresponding rules from alert_data_json
-            alert_map = {alert["grafana_alert"]["title"]: alert for alert in alert_data_json["rules"]}
+            # If rule group response rules list is not empty process rule group
+            if rule_group_response["rules"]:
+                # Create a map of alert names to their corresponding rules from alert_data_json
+                alert_map = {alert["grafana_alert"]["title"]: alert for alert in alert_data_json["rules"]}
 
-            # For each alert in the existing rule group, check if it exists in alert_data_json and overwrite the rule in rule_group_response
-            for i, existing_alert in enumerate(rule_group_response["rules"]):
-                alert_name = existing_alert["grafana_alert"]["title"]
-                if alert_name in alert_map:
-                    rule_group_response["rules"][i] = alert_map[alert_name]
-                    #Remove alerts from alert_data_json that are already in rule_group_response
-                    del alert_map[alert_name]
-            # Add any remaining alerts from alert_data_json that were not in rule_group_response
-            for remaining_alert in alert_map.values():
-                rule_group_response["rules"].append(remaining_alert)
+                # For each alert in the existing rule group, check if it exists in alert_data_json and overwrite the rule in rule_group_response
+                for i, existing_alert in enumerate(rule_group_response["rules"]):
+                    alert_name = existing_alert["grafana_alert"]["title"]
+                    if alert_name in alert_map:
+                        rule_group_response["rules"][i] = alert_map[alert_name]
+                        #Remove alerts from alert_data_json that are already in rule_group_response
+                        del alert_map[alert_name]
+                # Add any remaining alerts from alert_data_json that were not in rule_group_response
+                for remaining_alert in alert_map.values():
+                    rule_group_response["rules"].append(remaining_alert)
+            else:
+                # If the rule group response is empty, add all alerts from alert_data_json
+                rule_group_response["rules"] = alert_data_json["rules"]
         else:
-            # If the rule group response is empty, add all alerts from alert_data_json
-            rule_group_response["rules"] = alert_data_json["rules"]
-
+            log.debug("Rule group not found, using the alert json as is.")
+            rule_group_response = alert_data_json
 
         path = f"/api/ruler/grafana/api/v1/rules/{folder_uid}"
 
