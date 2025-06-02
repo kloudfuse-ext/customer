@@ -385,7 +385,7 @@ class DownloadAlert(AlertManager):
             return True
         except OSError as e:
             log.error("Failed to create file {}: {}", file_path, str(e))
-            return False
+            return False # Ensure False is returned on error
 
     def process_args(self, alert_name, directory, output, multi_directory):
         valid = self._validate_file(output)
@@ -433,7 +433,12 @@ class DownloadAlert(AlertManager):
 
     def _download_alerts_from_all_folders(self, output_dir):
         find_folder_api = "/api/folders"
-        folders_response = self.gc._http_get_request_to_grafana(find_folder_api)
+        folders_response, success = self.gc._http_get_request_to_grafana(find_folder_api) # Unpack success
+        
+        if not success or folders_response is None: # Check for success and valid response
+            log.error("Failed to fetch Grafana folders.")
+            exit(1) 
+
         log.debug("Output DIR: {}", output_dir)
         if os.path.exists(output_dir) and os.path.isfile(output_dir):
             # Remove the file
@@ -448,7 +453,8 @@ class DownloadAlert(AlertManager):
         elif not os.path.isdir(output_dir):
             log.error("Output path exists and is not a directory: {}", output_dir)
             return
-        for folder in folders_response[0]:
+        # Corrected loop: iterate over folders_response directly if it's the list of folders
+        for folder in folders_response: 
             folder_name = folder['title']
             folder_output_path = os.path.join(output_dir, folder_name)
             log.debug("Downloading alerts from folder: {}", folder_name)
@@ -472,6 +478,7 @@ class DeleteAlert(AlertManager):
             res = self.gc.delete_alert(
                 self.alert_folder_name,
                 alert_name,
+                delete_all=False # Explicitly pass delete_all=False
             )
             log.debug("Single alert deletion response: {}", res)
         elif directory:
