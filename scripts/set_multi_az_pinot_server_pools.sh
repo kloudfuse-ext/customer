@@ -25,7 +25,7 @@ do
   do
     tags=`curl -s -X GET http://$CONTROLLER/instances/Server_$pod.$sts-headless.$namespace.svc.cluster.local_8098 -H 'accept: application/json' --fail | jq -c '.tags[]' -r`
     curr_node=`kubectl get pods $pod -n $namespace --no-headers -o 'custom-columns=NODE:.spec.nodeName'`
-    curr_zone=`kubectl get nodes $nodes --no-headers -o 'custom-columns=ZONE:.metadata.labels.topology\.kubernetes\.io/zone'`
+    curr_zone=`kubectl get nodes $curr_node --no-headers -o 'custom-columns=ZONE:.metadata.labels.topology\.kubernetes\.io/zone'`
     zone_idx=0
     for zone in $zones
     do
