@@ -4,8 +4,13 @@
   - kubectl exec -it kafka-broker-0 bash
   - unset JMX_PORT
   - cd /opt/bitnami/kafka/bin/
+  - First, check your broker IDs using one of these methods:
+    - ./kafka-metadata-shell.sh --snapshot /bitnami/kafka/data/__cluster_metadata-0/00000000000000000000.log --print-brokers 2>/dev/null | grep "BrokerId:" | awk '{print $2}'
+    - Or if the above doesn't work: ./kafka-broker-api-versions.sh --bootstrap-server localhost:9092 | grep -E "id [0-9]+" | awk '{print $2}' | sort -n | uniq
   - ./kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --topics-to-move-json-file /tmp/topics.json --broker-list <broker_list> --generate > /tmp/proposal.json
-  - Here <broker_list> should be 100,101...100+num_brokers-1. Eg: if there are 7 brokers then pass 100,101,102,103,104,105,106
+  - Here <broker_list> should be the comma-separated list of broker IDs from the previous command. Examples:
+    - If broker IDs are 0,1,2 then pass: 0,1,2
+    - If broker IDs are 100,101,102,103,104,105,106 then pass: 100,101,102,103,104,105,106
 3. Copy proposal.json out of kafka broker pod
    - kubectl cp kafka-broker-0:/tmp/proposal.json /tmp/proposal.json
 4. Run script to create new assignment plan
