@@ -14,7 +14,7 @@ echo "Finding and fixing users where email = login (Okta UID format)..."
 echo ""
 
 # Find all users where email = login and email looks like an Okta UID
-users_to_fix=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"SELECT DISTINCT login FROM users WHERE email = login AND email LIKE '00u%';\"")
+users_to_fix=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"SELECT DISTINCT login FROM users WHERE email = login;\"")
 
 if [ -z "$users_to_fix" ]; then
     echo "No users found with email = login in Okta UID format"
@@ -139,7 +139,7 @@ echo "Verifying final state..."
 echo ""
 
 # Show remaining users where email = login
-remaining=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -c \"SELECT id, email, name, login FROM users WHERE email = login AND email LIKE '00u%' ORDER BY login;\"")
+remaining=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -c \"SELECT id, email, name, login FROM users WHERE email = login ORDER BY login;\"")
 
 if [ -n "$remaining" ]; then
     echo "Remaining users that need manual intervention:"
