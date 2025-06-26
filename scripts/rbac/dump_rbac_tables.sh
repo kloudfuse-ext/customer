@@ -52,15 +52,14 @@ echo "-- Users data" >> "$DUMP_FILE"
 
 echo "Dumping users table..."
 kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"
-SELECT 'INSERT INTO users (id, email, name, role, login, grafana_id, grafana_org_id, service_account) VALUES (' || 
+SELECT 'INSERT INTO users (id, email, name, role, login, grafana_id, grafana_org_id) VALUES (' || 
        COALESCE('''' || REPLACE(id, '''', '''''') || '''', 'NULL') || ', ' ||
        COALESCE('''' || REPLACE(email, '''', '''''') || '''', 'NULL') || ', ' ||
        COALESCE('''' || REPLACE(name, '''', '''''') || '''', 'NULL') || ', ' ||
        COALESCE('''' || REPLACE(role, '''', '''''') || '''', 'NULL') || ', ' ||
        COALESCE('''' || REPLACE(login, '''', '''''') || '''', 'NULL') || ', ' ||
        COALESCE(grafana_id::text, 'NULL') || ', ' ||
-       COALESCE(grafana_org_id::text, 'NULL') || ', ' ||
-       service_account::text || 
+       COALESCE(grafana_org_id::text, 'NULL') ||
        ') ON CONFLICT (id) DO NOTHING;'
 FROM users
 ORDER BY email;\"" >> "$DUMP_FILE"
