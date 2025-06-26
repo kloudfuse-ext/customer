@@ -107,6 +107,12 @@ while read -r uid; do
         if [ -n "$user_with_uid_email" ]; then
             echo "  Found user with email=login: $user_with_uid_email"
             
+            # Check if this is the dashuser - protect from deletion
+            if [ "$uid" = "dashuser" ]; then
+                echo "  SKIPPING dashuser - this is a protected system user"
+                continue
+            fi
+            
             # Get the user with proper email (not equal to login, case-insensitive login check)
             user_with_proper_email=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"SELECT id, email FROM users WHERE LOWER(login) = LOWER('$uid') AND email != '$uid' LIMIT 1;\"")
             

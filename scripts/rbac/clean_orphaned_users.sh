@@ -1,12 +1,34 @@
 #!/bin/bash
 
 # Script to delete users where email = login and user has no group memberships
-# Usage: ./cleanup_orphaned_users.sh [namespace]
+# Usage: ./cleanup_orphaned_users.sh [--dry-run] [namespace]
 
 POD_NAME="kfuse-configdb-0"
 DB_NAME="rbacdb"
 DB_USER="postgres"
-NAMESPACE="${1:-default}"  # Allow namespace to be passed as first argument
+DRY_RUN=false
+NAMESPACE="default"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        *)
+            NAMESPACE="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ "$DRY_RUN" = true ]; then
+    echo "======================================"
+    echo "DRY RUN MODE - No changes will be made"
+    echo "======================================"
+    echo ""
+fi
 
 echo "Processing users in namespace: $NAMESPACE"
 echo "Finding users where email = login and have no group memberships..."
@@ -53,16 +75,28 @@ while IFS='|' read -r user_id login email; do
     
     if [ "$group_count" -eq 0 ]; then
         echo "  Confirmed: User has no group memberships"
-        echo "  Deleting user..."
         
-        # Delete the user
-        kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM users WHERE id = '$user_id';\""
+        # Check if this is the dashuser - protect from deletion
+        if [ "$login" = "dashuser" ] || [ "$email" = "dashuser" ]; then
+            echo "  SKIPPING dashuser - this is a protected system user"
+            continue
+        fi
         
-        if [ $? -eq 0 ]; then
-            echo "  ✓ User deleted successfully"
+        if [ "$DRY_RUN" = true ]; then
+            echo "  [DRY RUN] Would delete user: $user_id"
             ((deleted_count++))
         else
-            echo "  ✗ Error deleting user"
+            echo "  Deleting user..."
+            
+            # Delete the user
+            kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM users WHERE id = '$user_id';\""
+            
+            if [ $? -eq 0 ]; then
+                echo "  ✓ User deleted successfully"
+                ((deleted_count++))
+            else
+                echo "  ✗ Error deleting user"
+            fi
         fi
     else
         echo "  WARNING: User has $group_count group membership(s) - skipping deletion"
@@ -74,7 +108,11 @@ done <<< "$orphaned_users"
 echo "Summary:"
 echo "========="
 echo "Total orphaned users found: $total_users"
-echo "Users deleted: $deleted_count"
+if [ "$DRY_RUN" = true ]; then
+    echo "Users that would be deleted: $deleted_count"
+else
+    echo "Users deleted: $deleted_count"
+fi
 echo ""
 
 # Show remaining users where email = login
@@ -88,4 +126,9 @@ else
 fi
 
 echo ""
-echo "Cleanup complete!"
+if [ "$DRY_RUN" = true ]; then
+    echo "DRY RUN COMPLETE - No changes were made"
+    echo "To apply these changes, run without --dry-run flag"
+else
+    echo "Cleanup complete!"
+fi
