@@ -469,18 +469,45 @@ class DeleteAlert(AlertManager):
 
     def process_args(self, alert_name, directory):
         if alert_name:
+            # Try to get alert UID first for more efficient deletion
+            alert_uid = self.gc.get_alert_uid_by_name(
+                self.alert_folder_name,
+                alert_name
+            )
+            
+            if alert_uid:
+                log.info("Found alert UID: {}, attempting deletion via Provisioning API", alert_uid)
+                res = self.gc.delete_alert_by_uid(alert_uid)
+                if res:
+                    log.info("Successfully deleted alert '{}' using Provisioning API", alert_name)
+                    return
+                else:
+                    log.warning("Provisioning API deletion failed, falling back to Ruler API")
+            
+            # Fallback to ruler API method
             res = self.gc.delete_alert(
                 self.alert_folder_name,
                 alert_name,
             )
-            log.debug("Single alert deletion response: {}", res)
+            if res:
+                log.info("Successfully deleted alert '{}' using Ruler API", alert_name)
+            else:
+                log.error("Failed to delete alert '{}'", alert_name)
+                exit(1)
         elif directory:
+            # Use the delete_alert method with delete_all=True
+            # This will internally use the Provisioning API method
             res = self.gc.delete_alert(
                 self.alert_folder_name,
                 None,
                 delete_all=True,
             )
-            log.debug("All alert deletion response: {}", res)
+            
+            if res:
+                log.info("Successfully deleted all alerts in folder '{}'", self.alert_folder_name)
+            else:
+                log.error("Failed to delete all alerts in folder '{}'", self.alert_folder_name)
+                exit(1)
         else:
             log.error("Invalid arguments provided.")
             exit(1)
