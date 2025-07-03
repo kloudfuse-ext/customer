@@ -68,7 +68,7 @@ Checks
 
 ### Metrics Available in Kloudfuse for creating alerts/dashboards 
 
-Navigate to Metrics -> Summary on Kloudfuse UI and you can view the following metrics for the endpoints added in `http_check`
+Navigate to Metrics -> Summary on Kloudfuse UI and you can view/use the following metrics for the endpoints added in `http_check`
 
 - `network_http_can_connect`
 
