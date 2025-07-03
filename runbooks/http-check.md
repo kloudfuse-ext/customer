@@ -1,6 +1,7 @@
 # HTTP Check Integration using Cluster Checks in `kfuse-observability-agent`
 
-This guide explains how to configure [Datadog HTTP Checks](https://docs.datadoghq.com/integrations/http_check/) as **cluster checks** using the `kfuse-observability-agent` Helm chart. 
+This guide explains how to configure [Datadog HTTP Checks](https://docs.datadoghq.com/integrations/http_check/) as **cluster checks** using the `kfuse-observability-agent` section in kfuse `custom-values.yaml` 
+
 Cluster checks allow you to monitor internal and external HTTP endpoints across your Kubernetes cluster from a centralized agent.
 
 ---
