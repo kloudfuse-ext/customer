@@ -66,7 +66,7 @@ Checks
       Status: UP
 ```
 
-### Metrics Checks on UI for creaating alerts/dashboards 
+### Metrics Available in Kloudfuse for creating alerts/dashboards 
 
 Navigate to Metrics -> Summary on Kloudfuse UI
 You can check for following metrics for the `http_check`
