@@ -70,8 +70,10 @@ Checks
 Navigate to Metrics -> Summary on Kloudfuse UI
 You can check for following metrics for the `http_check`
 
--`network_http_can_connect`
--`network_http_cant_connect`
--`network_http_response_time`
+- `network_http_can_connect`
+
+- `network_http_cant_connect`
+
+- `network_http_response_time`
 
 Reach out to Kloudfuse Customer Success team for any additional queries.
