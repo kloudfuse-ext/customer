@@ -475,15 +475,6 @@ class DeleteAlert(AlertManager):
                 alert_name
             )
             
-            if alert_uid:
-                log.info("Found alert UID: {}, attempting deletion via Provisioning API", alert_uid)
-                res = self.gc.delete_alert_by_uid(alert_uid)
-                if res:
-                    log.info("Successfully deleted alert '{}' using Provisioning API", alert_name)
-                    return
-                else:
-                    log.warning("Provisioning API deletion failed, falling back to Ruler API")
-            
             # Fallback to ruler API method
             res = self.gc.delete_alert(
                 self.alert_folder_name,
