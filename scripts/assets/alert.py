@@ -469,13 +469,6 @@ class DeleteAlert(AlertManager):
 
     def process_args(self, alert_name, directory):
         if alert_name:
-            # Try to get alert UID first for more efficient deletion
-            alert_uid = self.gc.get_alert_uid_by_name(
-                self.alert_folder_name,
-                alert_name
-            )
-            
-            # Fallback to ruler API method
             res = self.gc.delete_alert(
                 self.alert_folder_name,
                 alert_name,

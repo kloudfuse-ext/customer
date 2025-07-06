@@ -179,30 +179,6 @@ class GrafanaClient:
 
         return self._http_post_request_to_grafana(path=path, post_data=json.dumps(rule_group_response))
 
-    def get_alert_uid_by_name(self, folder_name: str, alert_name: str) -> Optional[str]:
-        """Get the UID of an alert by its name.
-        
-        Args:
-            folder_name: Name of the folder containing the alert
-            alert_name: Name of the alert
-            
-        Returns:
-            str: Alert UID if found, None otherwise
-        """
-        existing_alerts, error = self._list_alerts(folder_name)
-        if error or not existing_alerts:
-            return None
-            
-        if folder_name not in existing_alerts[0]:
-            return None
-            
-        for rule_group in existing_alerts[0][folder_name]:
-            for rule in rule_group.get("rules", []):
-                if rule.get("grafana_alert", {}).get("title") == alert_name:
-                    return rule.get("grafana_alert", {}).get("uid")
-                    
-        return None
-
     def _list_alerts(self, folder_name: str) -> tuple[Optional[List], Optional[str]]:
         """List all alerts in a Grafana folder.
         
@@ -365,93 +341,6 @@ class GrafanaClient:
             else:
                 log.info("Successfully deleted alert '{0}' from folder '{1}'".format(alert_name, folder_name))
                 return True
-
-    def delete_alert_by_uid(self, alert_uid):
-        """Delete a single alert using the Provisioning API.
-        
-        This method uses the Grafana Provisioning API which allows direct deletion
-        of alerts by UID. This is more efficient than the ruler API approach.
-        
-        Args:
-            alert_uid: The UID of the alert to delete
-            
-        Returns:
-            bool: True if deletion was successful, False otherwise
-        """
-        log.info("Attempting to delete alert with UID: {0}".format(alert_uid))
-        
-        # Use the provisioning API endpoint
-        path = f"/api/v1/provisioning/alert-rules/{alert_uid}"
-        response, success = self._http_delete_request_to_grafana(path)
-        
-        if success:
-            log.info("Successfully deleted alert with UID: {0}".format(alert_uid))
-            return True
-        else:
-            log.error("Failed to delete alert with UID: {0}, response: {1}".format(alert_uid, response))
-            return False
-
-    def delete_all_alerts_by_uid(self, folder_name):
-        """Delete all alerts in a folder using the Provisioning API.
-        
-        This method lists all alerts in a folder, extracts their UIDs,
-        and deletes each one individually using the Provisioning API.
-        This is more reliable than trying to post empty rule groups.
-        
-        Args:
-            folder_name: Name of the folder containing alerts to delete
-            
-        Returns:
-            bool: True if all deletions were successful, False otherwise
-        """
-        log.info("Attempting to delete all alerts in folder '{0}' using Provisioning API".format(folder_name))
-        
-        # List all alerts in the folder
-        existing_alerts, error = self._list_alerts(folder_name)
-        if error:
-            log.error("Failed to list alerts: {0}".format(error))
-            return False
-            
-        if not existing_alerts or existing_alerts[0] == {} or folder_name not in existing_alerts[0]:
-            log.info("No alerts found in folder: {0}".format(folder_name))
-            return True
-            
-        # Collect all alert UIDs
-        alert_uids = []
-        for rule_group in existing_alerts[0][folder_name]:
-            for rule in rule_group.get("rules", []):
-                uid = rule.get("grafana_alert", {}).get("uid")
-                title = rule.get("grafana_alert", {}).get("title", "Unknown")
-                if uid:
-                    alert_uids.append((uid, title))
-                else:
-                    log.warning("Alert '{0}' has no UID, cannot delete via Provisioning API".format(title))
-                    
-        if not alert_uids:
-            log.warning("No alerts with UIDs found in folder: {0}".format(folder_name))
-            return False
-            
-        # Delete each alert
-        success_count = 0
-        failed_alerts = []
-        
-        for uid, title in alert_uids:
-            log.info("Deleting alert '{0}' (UID: {1})".format(title, uid))
-            if self.delete_alert_by_uid(uid):
-                success_count += 1
-            else:
-                failed_alerts.append(title)
-                
-        # Report results
-        total_alerts = len(alert_uids)
-        if success_count == total_alerts:
-            log.info("Successfully deleted all {0} alerts from folder '{1}'".format(total_alerts, folder_name))
-            return True
-        else:
-            log.error("Failed to delete {0} out of {1} alerts: {2}".format(
-                len(failed_alerts), total_alerts, ", ".join(failed_alerts)
-            ))
-            return False
 
     def download_alert(self, folder_name, alert_name, all_alerts=False):
         """Download alert."""
