@@ -350,7 +350,7 @@ def main():
             permission = user_info.get('permission', 'Member') if isinstance(user_info, dict) else 'Member'
             
             if email not in existing_users:
-                print(f"    ❌ User not found: {email}")
+                print(f"    [X] User not found: {email}")
                 stats['users_not_found'] += 1
                 continue
             
@@ -380,7 +380,7 @@ def main():
     if args.dry_run:
         print("\n=== DRY RUN COMPLETE - No changes were made ===")
     else:
-        print("\n✅ Operation completed successfully!")
+        print("\n[SUCCESS] Operation completed successfully!")
 
 if __name__ == "__main__":
     main()
