@@ -285,7 +285,8 @@ def main():
         'teams_not_found': 0,
         'users_removed': 0,
         'users_not_found': 0,
-        'users_not_in_team': 0
+        'users_not_in_team': 0,
+        'admin_skipped': 0
     }
     
     for team_name, user_emails in teams_users.items():
@@ -293,7 +294,7 @@ def main():
         
         # Check if team exists
         if team_name not in existing_teams:
-            print(f"  ❌ Team '{team_name}' not found in Grafana")
+            print(f"  [X] Team '{team_name}' not found in Grafana")
             stats['teams_not_found'] += 1
             continue
         
@@ -303,13 +304,25 @@ def main():
         # Remove users from team
         print(f"  Removing {len(user_emails)} users from team...")
         for email in user_emails:
+            # Skip admin user
+            if email.lower() in ['admin@localhost', 'admin']:
+                print(f"    [SKIP] Skipping admin user: {email}")
+                stats['admin_skipped'] += 1
+                continue
+                
             if email not in existing_users:
-                print(f"    ❌ User not found: {email}")
+                print(f"    [X] User not found: {email}")
                 stats['users_not_found'] += 1
                 continue
             
             user = existing_users[email]
             user_id = user['id']
+            
+            # Double-check for admin by login name
+            if user.get('login', '').lower() == 'admin':
+                print(f"    [SKIP] Skipping admin user: {email} (login: {user.get('login')})")
+                stats['admin_skipped'] += 1
+                continue
             
             if args.dry_run:
                 print(f"    [DRY RUN] Would remove user: {email} (ID: {user_id})")
@@ -327,13 +340,15 @@ def main():
     print(f"  Teams not found: {stats['teams_not_found']}")
     print(f"  Users removed from teams: {stats['users_removed']}")
     print(f"  Users not found in Grafana: {stats['users_not_found']}")
+    if stats['admin_skipped'] > 0:
+        print(f"  Admin users skipped: {stats['admin_skipped']}")
     if stats['users_not_in_team'] > 0:
         print(f"  Users not in teams (already removed): {stats['users_not_in_team']}")
     
     if args.dry_run:
         print("\n=== DRY RUN COMPLETE - No changes were made ===")
     else:
-        print("\n✅ Operation completed successfully!")
+        print("\n[SUCCESS] Operation completed successfully!")
 
 if __name__ == "__main__":
     main()
