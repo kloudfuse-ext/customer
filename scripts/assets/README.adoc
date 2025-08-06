@@ -221,4 +221,32 @@ python dashboard.py download -m -o /path/to/dashboards/download/ \
 ----
 ====
 
+[[dashboards-delete]]
+=== Delete Dashboards
 
+Remove dashboards from Grafana.
+
+WARNING: Dashboard deletion is permanent and cannot be undone. Be careful when using these commands, especially when deleting all dashboards from a folder.
+
+.Delete a Single Dashboard
+====
+[,code]
+----
+python dashboard.py delete -s "Dashboard Name" \
+    -f "My Dashboard Folder" \
+    -a https://<grafana-instance>/grafana \
+    -u admin -p password
+----
+====
+
+.Delete All Dashboards in a Folder
+====
+[,code]
+----
+python dashboard.py delete -d \
+    -f "My Dashboard Folder" \
+    -a https://<grafana-instance>/grafana \
+    -u admin -p password
+----
+IMPORTANT: This command will prompt for confirmation before deleting all dashboards. You must type `yes` to proceed with the deletion.
+====
