@@ -19,7 +19,7 @@ fi
 
 for pod in `kubectl get pods -n $namespace -o 'custom-columns=NAME:.metadata.name,CONTROLLER:.metadata.ownerReferences[].name' | grep $sts_name$ | awk '{print $1}'`
 do
-  for pvc in `kubectl get pods -n $namespace $pod -o 'custom-columns=PVC:.spec.volumes[].persistentVolumeClaim.claimName' | grep -v PVC`
+  for pvc in `kubectl get pods -n $namespace $pod -o 'custom-columns=PVC:.spec.volumes[*].persistentVolumeClaim.claimName' | grep -v PVC`
   do
     echo Patching $pvc
     echo "kubectl patch pvc $pvc -n $namespace --patch '{\"spec\": {\"resources\": {\"requests\": {\"storage\": \"'$size'\" }}}}'"
