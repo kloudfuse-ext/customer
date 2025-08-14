@@ -22,27 +22,7 @@ This guide provides step-by-step instructions to set up an Amazon EKS cluster wi
 
 ---
 
-## 2. Create a Node Group (AWS Console)
-
-1. **Create a node group from the AWS Console:**
-   - In your EKS cluster, go to the "Compute" tab and click "Add node group".
-   - Use the default settings for AMI and instance type as per your needs.
-   - When prompted for the node IAM role, click "Create new role" and let AWS create the recommended role.
-   - After creation, ensure the node group IAM role has the following AWS managed policies attached:
-     - `AmazonS3FullAccess`
-     - `AmazonEKSWorkerNodePolicy`
-     - `AmazonEKS_CNI_Policy`
-     - `AmazonEC2ContainerRegistryReadOnly`
-   - If any policy is missing, attach it via the AWS Console or CLI:
-     ```sh
-     aws iam attach-role-policy \
-       --role-name <node-role-name> \
-       --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
-     ```
-
----
-
-## 3. Install EKS Add-ons
+## 2. Install EKS Add-ons
 
 Install the following add-ons:
 - kube-proxy
@@ -92,6 +72,26 @@ eksctl create iamserviceaccount \
 
 ---
 
+## 3. Create a Node Group (AWS Console)
+
+1. **Create a node group from the AWS Console:**
+   - In your EKS cluster, go to the "Compute" tab and click "Add node group".
+   - Use the default settings for AMI and instance type as per your needs.
+   - When prompted for the node IAM role, click "Create new role" and let AWS create the recommended role.
+   - After creation, ensure the node group IAM role has the following AWS managed policies attached:
+     - `AmazonS3FullAccess`
+     - `AmazonEKSWorkerNodePolicy`
+     - `AmazonEKS_CNI_Policy`
+     - `AmazonEC2ContainerRegistryReadOnly`
+   - If any policy is missing, attach it via the AWS Console or CLI:
+     ```sh
+     aws iam attach-role-policy \
+       --role-name <node-role-name> \
+       --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
+     ```
+
+---
+
 ## 4. Verify Add-ons
 
 Check that all pods in the `kube-system` namespace are running:
@@ -111,6 +111,13 @@ Follow the official installation instructions: [Kloudfuse Install Guide](https:/
 
 1. **Update Node Role Trust Policy**
    - Edit the node role's trust policy to allow the `kfuse:default` service account to assume the role via OIDC:
+   - **To get your OIDC URL, run:**
+     ```sh
+     aws eks describe-cluster \
+       --name <your-cluster-name> \
+       --query "cluster.identity.oidc.issuer" \
+       --output text
+     ```
    ```json
    {
      "Version": "2012-10-17",
@@ -125,7 +132,7 @@ Follow the official installation instructions: [Kloudfuse Install Guide](https:/
        {
          "Effect": "Allow",
          "Principal": {
-           "Federated": "arn:aws:iam::<account-id>:oidc-provider/<oidc-provider-url>"
+           "Federated": "arn:aws:iam::<aws-account-id>:oidc-provider/<oidc-provider-url>"
          },
          "Action": "sts:AssumeRoleWithWebIdentity",
          "Condition": {
@@ -138,11 +145,32 @@ Follow the official installation instructions: [Kloudfuse Install Guide](https:/
    }
    ```
 
+   **Example:**
+   ```json
+   {
+     "Effect": "Allow",
+     "Principal": {
+       "Federated": "arn:aws:iam::119999443945:oidc-provider/oidc.eks.us-west-2.amazonaws.com/id/4A021F22222F9D6065B62CD6666B09A9"
+     },
+     "Action": "sts:AssumeRoleWithWebIdentity",
+     "Condition": {
+       "StringEquals": {
+         "oidc.eks.us-west-2.amazonaws.com/id/4A021F22222F9D6065B62CD6666B09A9:sub": "system:serviceaccount:kfuse:default"
+       }
+     }
+   }
+   ```
+
 2. **Patch the Service Account in kfuse Namespace:**
    ```sh
    kubectl patch serviceaccount default \
      -n kfuse \
      -p '{"metadata": {"annotations": {"eks.amazonaws.com/role-arn": "<arn of node role>"}}}'
+   ```
+
+3. **Restart Pinot StatefulSets to pick up the new role:**
+   ```sh
+   kubectl rollout restart sts -n kfuse pinot-server-realtime pinot-server-offline pinot-controller
    ```
 
 ---
