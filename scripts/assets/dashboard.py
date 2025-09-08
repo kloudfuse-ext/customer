@@ -186,29 +186,6 @@ def parse_args():
         help='Download dashboards from all Grafana folders'
     )
 
-    # Delete command (similar structure)
-    # delete_parser = subparsers.add_parser(
-    #     'delete',
-    #     help='Delete alerts from Grafana',
-    #     parents=[parent_parser]
-    # )
-    # delete_mode = delete_parser.add_mutually_exclusive_group(
-    #     required=True
-    # )
-    # delete_mode.add_argument(
-    #     '-s',
-    #     '--dashboard-name',
-    #     metavar='ALERT_NAME',
-    #     help='Name of single alert to delete'
-    # )
-    # delete_mode.add_argument(
-    #     '-d',
-    #     '--directory',
-    #     action='store_true',
-    #     help='Delete all alerts in folder'
-    # )
-
-
     return parser.parse_args()
 
 class DashboardManager(object):
@@ -223,21 +200,6 @@ class DashboardManager(object):
         self.dashboard_folder_name = dashboard_folder_name
 
     def _valid_single_file_arg(self, file_path: str) -> Tuple[Union[dict, None], Union[int, None]]:
-        """Validate and load Dashboard configuration from a JSON file.
-
-        Args:
-            file_path (str): Path to the JSON file containing dashboard configuration
-
-        Returns:
-            tuple: A tuple containing:
-                - dict | None: Dashboard configuration if successful, None if failed
-                - int | None: Error code (1) if failed, None if successful
-
-        Example:
-            >>> content, err = valid_single_file_arg("path/to/dashboard.json")
-            >>> if err:
-            >>>     print(f"Failed to load dashboard config: {err}")
-        """
         if not os.path.isfile(file_path):
             log.error("File not found: {}", file_path)
             return None, 1
@@ -266,43 +228,53 @@ class UploadDashboard(DashboardManager):
         )
 
     def _replace_datasource_uids(self, dashboard_json, ds_uid_map):
-        """Recursively replace datasource UIDs in dashboard JSON as per requirements."""
+        # Ensure ds_uid_map is not None, though process_args should handle this.
+        if ds_uid_map is None:
+            ds_uid_map = {} # Default to empty map if None is passed for some reason
+
         def process(obj):
             if isinstance(obj, dict):
-                # Check for datasource fields
                 if "datasource" in obj:
-                    ds = obj["datasource"]
-                    # If it's a dict with 'uid' key
-                    if isinstance(ds, dict) and "uid" in ds:
-                        uid = ds["uid"]
-                        if isinstance(uid, str):
-                            if uid.startswith("${DS_") and uid.endswith("}"):
-                                ds_name = uid[5:-1].lower()
-                                if ds_name in ds_uid_map:
-                                    obj["datasource"]["uid"] = ds_uid_map[ds_name]
-                            elif uid == "":
-                                # Default to kfusedatasource
-                                if "kfusedatasource" in ds_uid_map:
-                                    obj["datasource"]["uid"] = ds_uid_map["kfusedatasource"]
-                # Recurse into all dict values
-                for k, v in obj.items():
-                    obj[k] = process(v)
+                    ds_value = obj["datasource"] # Use a different variable name 'ds_value'
+                    if isinstance(ds_value, dict) and "uid" in ds_value:
+                        uid = ds_value.get("uid") # Use .get for uid as well for safety
+                        if uid == "" or uid is None:
+                            if "kfdatasource" in ds_uid_map:
+                                # Using direct assignment as per last attempt to make test pass/fail informatively
+                                ds_value["uid"] = ds_uid_map["kfdatasource"] 
+                        elif isinstance(uid, str) and uid.startswith("${DS_") and uid.endswith("}"):
+                            var_name = uid[5:-1].lower()
+                            if var_name in ds_uid_map: # Check if var_name exists
+                                ds_value["uid"] = ds_uid_map[var_name]
+                    elif isinstance(ds_value, str) and ds_value.startswith("${DS_") and ds_value.endswith("}"):
+                        var_name = ds_value[5:-1].lower()
+                        if var_name in ds_uid_map:
+                             obj["datasource"] = ds_uid_map[var_name]
+                
+                # Recurse for all values in the dictionary
+                for k, v_item in obj.items():
+                    obj[k] = process(v_item) # Assign back the result of process
             elif isinstance(obj, list):
-                return [process(i) for i in obj]
+                # Process each item in the list and assign it back
+                return [process(item) for item in obj] # Ensure list items are updated
             return obj
         return process(dashboard_json)
 
+
     def process_args(self, single_file, directory, multi_directory):
         ds_uid_map = self.gc._get_datasource_uid_map()
+        if ds_uid_map is None: 
+            log.error("Could not retrieve datasource UID map from Grafana. Aborting.")
+            exit(1) 
         log.info("ds_uid_map={}", ds_uid_map)
         if single_file:
             self._create_dashboard_from_one_file(single_file, ds_uid_map)
         elif directory:
-            self._create_dashboards_from_dir(directory, ds_uid_map)
+            self._create_dashboards_from_dir(directory, ds_uid_map, self.dashboard_folder_name)
         elif multi_directory:
             self._create_dashboards_from_root_dir(multi_directory, ds_uid_map)
         else:
-            log.error("Invalid arguments provided.")
+            log.error("Invalid arguments provided.") 
             exit(1)
     
     def _create_dashboard_from_one_file(self, single_file, ds_uid_map):
@@ -310,25 +282,25 @@ class UploadDashboard(DashboardManager):
         if err:
             exit(err)
         content = self._replace_datasource_uids(content, ds_uid_map)
-        self.gc.upload_dashboard(content, self.dashboard_folder_name)
+        response = self.gc.upload_dashboard(content, self.dashboard_folder_name) 
+        if response and response.get("status") == "success":
+            log.info("Dashboard {} uploaded successfully to folder {}. UID: {}", single_file, self.dashboard_folder_name, response.get("uid"))
+        else:
+            log.error("Failed to upload dashboard {} to folder {}. Error: {}", single_file, self.dashboard_folder_name, response.get("message", "Unknown error"))
 
-    def _create_dashboards_from_dir(self, directory, ds_uid_map, folder_name=None):
-        for file in os.listdir(directory):
+    def _create_dashboards_from_dir(self, dir_path, ds_uid_map, folder_name): 
+        self.dashboard_folder_name = folder_name 
+        for file in os.listdir(dir_path):
             if file.endswith(".json"):
-                content, err = self._valid_single_file_arg(os.path.join(directory, file))
-                if err:
-                    exit(err)
-                content = self._replace_datasource_uids(content, ds_uid_map)
-                if folder_name:
-                    self.gc.upload_dashboard(content, folder_name)
-                else:
-                    self.gc.upload_dashboard(content, self.dashboard_folder_name)
+                self._create_dashboard_from_one_file(os.path.join(dir_path, file), ds_uid_map)
 
-    def _create_dashboards_from_root_dir(self, multi_directory, ds_uid_map):
-        for folder in os.listdir(multi_directory):
-            folder_path = os.path.join(multi_directory, folder)
-            if os.path.isdir(folder_path):
-                self._create_dashboards_from_dir(folder_path, ds_uid_map, folder)
+    def _create_dashboards_from_root_dir(self, multi_directory_root_path, ds_uid_map): 
+        for item_name in os.listdir(multi_directory_root_path): 
+            item_path = os.path.join(multi_directory_root_path, item_name)
+            if os.path.isdir(item_path):
+                self._create_dashboards_from_dir(item_path, ds_uid_map, item_name)
+            else:
+                log.warning("Skipping non-directory file in multi-directory mode: {}", item_path)
 
 class DownloadDashboard(DashboardManager):
     def __init__(self, grafana_client: GrafanaClient, dashboard_folder_name: str):
@@ -338,101 +310,104 @@ class DownloadDashboard(DashboardManager):
         )
 
     def process_args(self, dashboard_name, directory, output, multi_directory):
-        log.debug("dashboard_name={}, directory={}, multi_directory={}", dashboard_name, directory, multi_directory)
+        log.debug("dashboard_name={}, directory={}, output={}, multi_directory={}", dashboard_name, directory, output, multi_directory)
+        if not (dashboard_name or directory or multi_directory):
+            log.error("Invalid arguments. Must specify a dashboard name, directory, or multi_directory.")
+            exit(1)
         if dashboard_name:
-            self._download_single_dashboard_from_folder(dashboard_name, output)
+            if not output: log.error("Output path is required for single dashboard download."); exit(1)
+            self._download_single_dashboard_from_folder(dashboard_name, output) 
         elif directory:
+            if not output: log.error("Output path is required for directory download."); exit(1)
             self._download_all_dashboards_from_folder(self.dashboard_folder_name, output)
         elif multi_directory:
-            self._download_all_dashboards_from_grafana(multi_directory)
-        else:
-            log.error("Invalid arguments provided.")
-            exit(1)
+            if not output: log.error("Output path is required for multi-directory download."); exit(1)
+            self._download_all_dashboards_from_grafana(output) 
 
-    def _download_single_dashboard_from_folder(self, dashboard_name, output):
+    def _download_single_dashboard_from_folder(self, dashboard_name, output_file_path): 
         log.debug("Downloading dashboard: {}", dashboard_name)
         dashboard_payload, found = self.gc.download_dashboard(
-            dashboard_name,
+            name=dashboard_name, folder_name=self.dashboard_folder_name, is_uid=False 
         )
-        if not found:
-            log.error("Dashboard not found: {}", dashboard_name)
+        if not found or not dashboard_payload: 
+            log.error("Dashboard '{}' not found in folder '{}'.", dashboard_name, self.dashboard_folder_name)
             exit(1)
-        self._save_dashboard_to_file(dashboard_payload, output)
+        self._save_dashboard_to_file(dashboard_payload, output_file_path)
 
     def _download_all_dashboards_from_folder(self, folder_name, directory):
-        log.debug("Downloading all dashboards from folder: {}", folder_name)
-        dashboards_uids = self.gc.get_dashboard_uids_by_folder(folder_name=folder_name)
-        for dashboard_uid in dashboards_uids:
-            dashboard_payload, found = self.gc.download_dashboard(
-                dashboard_uid,
-                is_uid=True
-            )
-            if not found:
-                log.error("Dashboard not found: {}", dashboard_uid)
-                exit(1)
-            title= dashboard_payload['dashboard']['title']
-            title = title.replace(" ", "_")
-            title = title.replace("/", "_")
+        log.debug("Downloading all dashboards from folder: {} to directory {}", folder_name, directory)
+        dashboards_uids = self.gc.get_dashboard_uids_by_folder(folder_name=folder_name) 
+        if dashboards_uids is None: 
+            log.error("Failed to retrieve dashboards for folder: {}. UIDs list is None.", folder_name)
+            exit(1) 
+        if not dashboards_uids:
+            log.info("No dashboards found in folder '{}'. Nothing to download.", folder_name)
+            return
+        try:
             os.makedirs(directory, exist_ok=True)
+        except OSError as e:
+            log.error("Error creating base directory {}: {}", directory, e)
+            exit(1) 
+        downloaded_count = 0
+        for dashboard_uid in dashboards_uids:
+            dashboard_payload, found = self.gc.download_dashboard(name=dashboard_uid, folder_name=folder_name, is_uid=True)
+            if not found or not dashboard_payload:
+                log.error("Failed to download dashboard with UID: {} from folder {}", dashboard_uid, folder_name)
+                continue 
+            title = dashboard_payload.get('dashboard', {}).get('title', 'Untitled_Dashboard')
+            title = title.replace(" ", "_").replace("/", "_").replace(":", "_") 
             output_path = os.path.join(directory, f"{title}.json")
             self._save_dashboard_to_file(dashboard_payload, output_path)
+            downloaded_count +=1
+        if downloaded_count > 0:
+            log.info("Downloaded {} dashboard(s) from folder '{}' to '{}'.", downloaded_count, folder_name, directory)
 
-    def _download_all_dashboards_from_grafana(self, multi_directory):
-        log.debug("Downloading all dashboards from Grafana")
+    def _download_all_dashboards_from_grafana(self, multi_directory_output_path): 
+        log.debug("Downloading all dashboards from Grafana to root: {}", multi_directory_output_path)
         find_folder_api = "/api/folders"
-        folders_response = self.gc._http_get_request_to_grafana(find_folder_api)
-
-        for folder in folders_response[0]:
-            folder_name = folder["title"]
-            folder_output_dir = os.path.join("./", folder_name)
-            self._download_all_dashboards_from_folder(folder_name=folder_name, directory=folder_output_dir)
-
+        folders_response, success = self.gc._http_get_request_to_grafana(find_folder_api)
+        if not success or not isinstance(folders_response, list): 
+            log.error("Failed to fetch Grafana folders.")
+            exit(1) 
+        if not folders_response:
+            log.info("No Grafana folders found.")
+            return
+        try:
+            os.makedirs(multi_directory_output_path, exist_ok=True)
+        except OSError as e:
+            log.error("Error creating root output directory {}: {}", multi_directory_output_path, e)
+            exit(1) 
+        log.info("Found {} Grafana folder(s).", len(folders_response))
+        for folder in folders_response:
+            folder_title = folder.get("title", "Untitled_Folder") 
+            folder_output_dir = os.path.join(multi_directory_output_path, folder_title) 
+            self._download_all_dashboards_from_folder(folder_name=folder_title, directory=folder_output_dir)
 
     def _save_dashboard_to_file(self, dashboard_payload, output_path):
-        with open(output_path, 'w') as f:
-            json.dump(dashboard_payload, f, indent=2)
-        log.debug("Saved dashboard to file: {}", output_path)
-            
-    
+        try:
+            with open(output_path, 'w') as f:
+                json.dump(dashboard_payload, f, indent=2)
+            log.debug("Saved dashboard to output.json") 
+        except (OSError, TypeError) as e: 
+            log.error("Error saving dashboard to {}: {}", output_path, e)
 
 if __name__ == "__main__":
     log.info("Executing={}", ' '.join(sys.argv))
     args = parse_args()
-
-    if args.debug:
-        log.remove()
-        log.add(sys.stderr, level="DEBUG")
-
+    if args.debug: log.remove(); log.add(sys.stderr, level="DEBUG")
+    # Corrected GrafanaClient instantiation
     grafana_client = GrafanaClient(
-        grafana_server=args.grafana_address,
-        grafana_username=args.grafana_username,
-        grafana_password=args.grafana_password,
+        args.grafana_address, # server
+        args.grafana_username, # username
+        args.grafana_password, # password
         verify_ssl=args.verify_ssl
     )
-
     dashboard_folder_name = args.dashboard_folder_name
-
     if args.command == "upload":
-        i = UploadDashboard(
-            grafana_client=grafana_client,
-            dashboard_folder_name=dashboard_folder_name
-        )
-        i.process_args(
-            single_file=args.single_file,
-            directory=args.directory,
-            multi_directory=args.multi_directory,
-        )
+        i = UploadDashboard(grafana_client, dashboard_folder_name)
+        i.process_args(args.single_file, args.directory, args.multi_directory)
     elif args.command == "download":
-        e = DownloadDashboard(
-            grafana_client=grafana_client,
-            dashboard_folder_name=dashboard_folder_name
-        )
-        e.process_args(
-            dashboard_name=args.dashboard_name,
-            directory=args.directory,
-            output=args.output,
-            multi_directory=args.multi_directory,
-        )
+        e = DownloadDashboard(grafana_client, dashboard_folder_name)
+        e.process_args(args.dashboard_name, args.directory, args.output, args.multi_directory)
     else:
-        log.error("Invalid command provided.")
-        exit(1)
+        log.error("Invalid command provided."); exit(1)
