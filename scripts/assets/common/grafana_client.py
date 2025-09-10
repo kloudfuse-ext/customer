@@ -15,7 +15,11 @@ log.add(sink=sys.stderr, level="INFO")
 
 
 class GrafanaClient:
-    def __init__(self, grafana_server, grafana_username, grafana_password, verify_ssl=True):
+    def __init__(self, grafana_server, grafana_username=None, grafana_password=None, auth_token=None, verify_ssl=True):
+        # Validate authentication method
+        if not auth_token and not (grafana_username and grafana_password):
+            raise ValueError("Authentication required: provide either username/password or auth_token")
+        
         parsed_url = urlparse(grafana_server)
         self._scheme = parsed_url.scheme or "https"  # Default to HTTPS if no scheme provided
         self._server = parsed_url.netloc 
@@ -23,10 +27,14 @@ class GrafanaClient:
         self._server = self._server + self._base_path
         self._username = grafana_username
         self._password = grafana_password
+        self._auth_token = auth_token
         self._headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
+        # Add Bearer token to headers if provided
+        if self._auth_token:
+            self._headers["Authorization"] = f"Bearer {self._auth_token}"
         self.verify = verify_ssl
 
     def _handle_http_request_to_grafana(self, **kwargs) -> Tuple:
@@ -37,7 +45,8 @@ class GrafanaClient:
         request_type = kwargs.get("request_type", "")
         request_body = kwargs.get("request_body", None)
         full_url = f"{self._scheme}://{self._server}{path}"
-        auth = HTTPBasicAuth(self._username, self._password)
+        # Use HTTPBasicAuth only if not using token authentication
+        auth = None if self._auth_token else HTTPBasicAuth(self._username, self._password)
         success = True
         response = request_fn(full_url, auth=auth, data=request_body, headers=self._headers, timeout=30, verify=self.verify)
         # log.error("http {0} returned status {1}".format(response.status_code, response.content))
