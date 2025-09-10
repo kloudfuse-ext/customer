@@ -22,11 +22,20 @@ These arguments apply to both alert and dashboard scripts:
 [[a]]
 `-a, --grafana-address`:: Grafana server URL
 
+=== Authentication Options
+
+You can authenticate to Grafana using either username/password (Basic Auth) or service account token (Bearer Token). Service account tokens are recommended for production environments.
+
 [[u]]
 `-u, --grafana-username`:: Grafana username (default: `admin`)
 
 [[p]]
 `-p, --grafana-password`:: Grafana password (default: `password`)
+
+[[auth-token]]
+`--auth-token`:: Grafana service account token (alternative to username/password)
+
+=== Other Options
 
 [[v]]
 `-v, --verify-ssl`:: Disable SSL verification (default: enabled). Use this flag to skip SSL verification when connecting to Grafana.
@@ -35,7 +44,9 @@ These arguments apply to both alert and dashboard scripts:
 === Notes
 
 * Replace `<grafana-instance>` with the actual Grafana server URL.
-* Ensure that the API credentials have the necessary permissions to manage alerts and dashboards.
+* Choose either username/password authentication OR service account token authentication (not both).
+* Service account tokens are recommended for automation and production environments.
+* Ensure that the API credentials or service account have the necessary permissions to manage alerts and dashboards.
 * The `-f` flag is required. It is a placeholder in some multi-directory operations.
 
 [[alerts]]
@@ -48,6 +59,7 @@ Upload alerts to a specific Grafana folder.
 
 .Upload a Single Alert
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py upload -s /path/to/alert.json \
@@ -55,10 +67,20 @@ python alert.py upload -s /path/to/alert.json \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py upload -s /path/to/alert.json \
+    -f "My Alert Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Upload Multiple Alerts from a Directory
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py upload -d /path/to/alerts/directory \
@@ -66,15 +88,34 @@ python alert.py upload -d /path/to/alerts/directory \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py upload -d /path/to/alerts/directory \
+    -f "My Alert Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Upload Alerts from Multiple Directories
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py upload -m /path/to/root_directory \
     -a https://<grafana-instance>/grafana \
     -u admin -p password \
+    -f "placeholder"
+----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py upload -m /path/to/root_directory \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere \
     -f "placeholder"
 ----
 ====
@@ -86,6 +127,7 @@ Retrieve alerts from Grafana, and save them as JSON files.
 
 .Download a Single Alert
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py download -s "Alert Name" -o /path/to/alert.json \
@@ -93,10 +135,20 @@ python alert.py download -s "Alert Name" -o /path/to/alert.json \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py download -s "Alert Name" -o /path/to/alert.json \
+    -f "My Alert Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Download All Alerts from a Folder
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py download -d -o /path/to/alerts/download/ \
@@ -104,15 +156,34 @@ python alert.py download -d -o /path/to/alerts/download/ \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py download -d -o /path/to/alerts/download/ \
+    -f "My Alert Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Download Alerts from All Folders
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py download -m -o /path/to/alerts/download/ \
     -a https://<grafana-instance>/grafana \
     -u admin -p password \
+    -f "placeholder"
+----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py download -m -o /path/to/alerts/download/ \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere \
     -f "placeholder"
 ----
 ====
@@ -124,6 +195,7 @@ Remove alerts from Grafana.
 
 .Delete a Single Alert
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py delete -s "Alert Name" \
@@ -131,15 +203,33 @@ python alert.py delete -s "Alert Name" \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py delete -s "Alert Name" \
+    -f "My Alert Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Delete All Alerts in a Folder
 ====
+Using username/password authentication:
 [,code]
 ----
 python alert.py delete -d -f "My Alert Folder" \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
+----
+
+Using service account token authentication:
+[,code]
+----
+python alert.py delete -d -f "My Alert Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
 ----
 ====
 
@@ -153,6 +243,7 @@ Upload dashboards to a specified folder in Grafana.
 
 .Upload a Single Dashboard
 ====
+Using username/password authentication:
 [,code]
 ----
 python dashboard.py upload -s /path/to/dashboard.json \
@@ -160,10 +251,20 @@ python dashboard.py upload -s /path/to/dashboard.json \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python dashboard.py upload -s /path/to/dashboard.json \
+    -f "My Dashboard Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Upload All Dashboards from a Directory
 ====
+Using username/password authentication:
 [,code]
 ----
 python dashboard.py upload -d /path/to/dashboards/directory \
@@ -171,15 +272,34 @@ python dashboard.py upload -d /path/to/dashboards/directory \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python dashboard.py upload -d /path/to/dashboards/directory \
+    -f "My Dashboard Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Upload Dashboards from Multiple Directories
 ====
+Using username/password authentication:
 [,code]
 ----
 python dashboard.py upload -m /path/to/dashboards_root_directory \
     -a https://<grafana-instance>/grafana \
     -u admin -p password \
+    -f "all"
+----
+
+Using service account token authentication:
+[,code]
+----
+python dashboard.py upload -m /path/to/dashboards_root_directory \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere \
     -f "all"
 ----
 ====
@@ -190,6 +310,7 @@ Retrieve dashboards from Grafana, and save them as JSON files.
 
 .Download a Single Dashboard
 ====
+Using username/password authentication:
 [,code]
 ----
 python dashboard.py download -s "Dashboard Name" -o /path/to/dashboard.json \
@@ -197,10 +318,20 @@ python dashboard.py download -s "Dashboard Name" -o /path/to/dashboard.json \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python dashboard.py download -s "Dashboard Name" -o /path/to/dashboard.json \
+    -f "My Dashboard Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Download All Dashboards from a Folder
 ====
+Using username/password authentication:
 [,code]
 ----
 python dashboard.py download -d -o /path/to/dashboards/download/ \
@@ -208,15 +339,34 @@ python dashboard.py download -d -o /path/to/dashboards/download/ \
     -a https://<grafana-instance>/grafana \
     -u admin -p password
 ----
+
+Using service account token authentication:
+[,code]
+----
+python dashboard.py download -d -o /path/to/dashboards/download/ \
+    -f "My Dashboard Folder" \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere
+----
 ====
 
 .Download Dashboards from All Folders
 ====
+Using username/password authentication:
 [,code]
 ----
 python dashboard.py download -m -o /path/to/dashboards/download/ \
     -a https://<grafana-instance>/grafana \
     -u admin -p password \
+    -f "all"
+----
+
+Using service account token authentication:
+[,code]
+----
+python dashboard.py download -m -o /path/to/dashboards/download/ \
+    -a https://<grafana-instance>/grafana \
+    --auth-token glsa_YourServiceAccountTokenHere \
     -f "all"
 ----
 ====
