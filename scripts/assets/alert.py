@@ -119,6 +119,10 @@ def parse_args():
         help="Grafana password"
     )
     parent_parser.add_argument(
+        "--auth-token",
+        help="Grafana service account token (alternative to username/password)"
+    )
+    parent_parser.add_argument(
         "-v",
         "--verify-ssl",
         action='store_false',
@@ -509,6 +513,7 @@ if __name__ == "__main__":
         grafana_server=args.grafana_address,
         grafana_username=args.grafana_username,
         grafana_password=args.grafana_password,
+        auth_token=args.auth_token,
         verify_ssl=args.verify_ssl,
     )
     alert_folder_name = args.alert_folder_name
