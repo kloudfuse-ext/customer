@@ -2,13 +2,15 @@
 
 # Script to fix case-sensitive email duplicates
 # Keeps the lowercase email version and transfers group memberships from mixed-case version
-# Usage: ./fix_case_sensitive_users_with_dryrun.sh [--dry-run] [namespace]
+# Usage: ./fix_case_sensitive_users_with_dryrun.sh [--dry-run] [--email <email>] [--limit <number>] [namespace]
 
 POD_NAME="kfuse-configdb-0"
 DB_NAME="rbacdb"
 DB_USER="postgres"
 DRY_RUN=false
 NAMESPACE="default"
+SPECIFIC_EMAIL=""
+LIMIT=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -16,6 +18,37 @@ while [[ $# -gt 0 ]]; do
         --dry-run)
             DRY_RUN=true
             shift
+            ;;
+        --email)
+            SPECIFIC_EMAIL="$2"
+            shift 2
+            ;;
+        --limit)
+            LIMIT="$2"
+            if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [ "$LIMIT" -eq 0 ]; then
+                echo "Error: --limit must be a positive integer"
+                exit 1
+            fi
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--dry-run] [--email <email>] [--limit <number>] [namespace]"
+            echo ""
+            echo "Options:"
+            echo "  --dry-run     Preview changes without applying them"
+            echo "  --email       Process only the specified email address"
+            echo "  --limit       Process only the first N duplicate email groups"
+            echo "  namespace     Kubernetes namespace (default: default)"
+            echo ""
+            echo "Examples:"
+            echo "  $0                                    # Process all duplicates in default namespace"
+            echo "  $0 --dry-run                          # Dry run for all duplicates"
+            echo "  $0 --email john.doe@example.com       # Process only john.doe@example.com"
+            echo "  $0 --limit 5                          # Process only first 5 duplicate email groups"
+            echo "  $0 --dry-run --limit 10               # Dry run for first 10 duplicate email groups"
+            echo "  $0 --dry-run --email user@example.com # Dry run for specific email"
+            echo "  $0 production                         # Process all duplicates in production namespace"
+            exit 0
             ;;
         *)
             NAMESPACE="$1"
@@ -32,7 +65,15 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 echo "Processing users in namespace: $NAMESPACE"
-echo "Finding and fixing case-sensitive email duplicates..."
+if [ -n "$SPECIFIC_EMAIL" ]; then
+    echo "Processing only email: $SPECIFIC_EMAIL"
+else
+    if [ -n "$LIMIT" ]; then
+        echo "Finding and fixing first $LIMIT case-sensitive email duplicate groups..."
+    else
+        echo "Finding and fixing all case-sensitive email duplicates..."
+    fi
+fi
 echo ""
 
 # Function to execute or simulate database commands
@@ -48,39 +89,45 @@ execute_db_command() {
     fi
 }
 
-# Function to execute or simulate Grafana deletion
-execute_grafana_delete() {
-    local grafana_user_id="$1"
-    local email="$2"
-    
-    if [ "$DRY_RUN" = true ]; then
-        echo "        [DRY RUN] Would delete Grafana user: $email (ID: $grafana_user_id)"
-    else
-        GRAFANA_PASSWORD=$(kubectl get secret kfuse-grafana-credentials -n "$NAMESPACE" -o jsonpath="{.data.admin-password}" | base64 -d)
-        if [ -n "$GRAFANA_PASSWORD" ]; then
-            GRAFANA_URL="http://kfuse-grafana.$NAMESPACE.svc.cluster.local"
-            DELETE_RESULT=$(kubectl run grafana-delete-temp --image=curlimages/curl:latest --rm -i --restart=Never -n "$NAMESPACE" -- curl -s -X DELETE -u "admin:$GRAFANA_PASSWORD" "$GRAFANA_URL/api/admin/users/$grafana_user_id" 2>/dev/null)
-            
-            if [ $? -eq 0 ] && [[ "$DELETE_RESULT" == *"User deleted"* ]]; then
-                echo "        Successfully deleted user from Grafana"
-            else
-                echo "        Warning: Failed to delete user from Grafana - $DELETE_RESULT"
-            fi
-        fi
-    fi
-}
 
 # Find case-sensitive email duplicates
-duplicate_emails=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"
-SELECT LOWER(email) as lower_email
-FROM users 
-GROUP BY LOWER(email) 
-HAVING COUNT(*) > 1 
-AND COUNT(DISTINCT email) > 1
-ORDER BY lower_email;\"")
+if [ -n "$SPECIFIC_EMAIL" ]; then
+    # Check if the specific email has case-sensitive duplicates
+    duplicate_emails=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"
+    SELECT LOWER(email) as lower_email
+    FROM users 
+    WHERE LOWER(email) = LOWER('$SPECIFIC_EMAIL')
+    GROUP BY LOWER(email) 
+    HAVING COUNT(*) > 1 
+    AND COUNT(DISTINCT email) > 1;\"")
+else
+    # Find all case-sensitive email duplicates
+    if [ -n "$LIMIT" ]; then
+        duplicate_emails=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"
+        SELECT LOWER(email) as lower_email
+        FROM users 
+        GROUP BY LOWER(email) 
+        HAVING COUNT(*) > 1 
+        AND COUNT(DISTINCT email) > 1
+        ORDER BY lower_email
+        LIMIT $LIMIT;\"")
+    else
+        duplicate_emails=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"
+        SELECT LOWER(email) as lower_email
+        FROM users 
+        GROUP BY LOWER(email) 
+        HAVING COUNT(*) > 1 
+        AND COUNT(DISTINCT email) > 1
+        ORDER BY lower_email;\"")
+    fi
+fi
 
 if [ -z "$duplicate_emails" ]; then
-    echo "No case-sensitive email duplicates found"
+    if [ -n "$SPECIFIC_EMAIL" ]; then
+        echo "No case-sensitive email duplicates found for: $SPECIFIC_EMAIL"
+    else
+        echo "No case-sensitive email duplicates found"
+    fi
     exit 0
 fi
 
@@ -193,38 +240,6 @@ while read -r lower_email; do
             echo "      No group memberships found"
         fi
         
-        # Delete user from Grafana
-        echo "      Attempting to delete user from Grafana..."
-        
-        if [ "$DRY_RUN" = true ]; then
-            echo "        [DRY RUN] Would check and delete user from Grafana: $mixed_email"
-        else
-            # Get Grafana admin password
-            GRAFANA_PASSWORD=$(kubectl get secret kfuse-grafana-credentials -n "$NAMESPACE" -o jsonpath="{.data.admin-password}" | base64 -d)
-            
-            if [ -n "$GRAFANA_PASSWORD" ]; then
-                GRAFANA_URL="http://kfuse-grafana.$NAMESPACE.svc.cluster.local"
-                
-                # Search for user in Grafana by email
-                echo "        Searching for user in Grafana with email: $mixed_email"
-                USER_SEARCH=$(kubectl run grafana-curl-temp --image=curlimages/curl:latest --rm -i --restart=Never -n "$NAMESPACE" -- curl -s -u "admin:$GRAFANA_PASSWORD" "$GRAFANA_URL/api/users/lookup?loginOrEmail=$mixed_email" 2>/dev/null)
-                
-                if [ $? -eq 0 ] && [ -n "$USER_SEARCH" ] && [[ "$USER_SEARCH" != *"error"* ]]; then
-                    GRAFANA_USER_ID=$(echo "$USER_SEARCH" | grep -o '"id":[0-9]*' | cut -d':' -f2)
-                    
-                    if [ -n "$GRAFANA_USER_ID" ] && [ "$GRAFANA_USER_ID" != "null" ]; then
-                        echo "        Found Grafana user with ID: $GRAFANA_USER_ID"
-                        execute_grafana_delete "$GRAFANA_USER_ID" "$mixed_email"
-                    else
-                        echo "        User not found in Grafana"
-                    fi
-                else
-                    echo "        Could not search for user in Grafana or user not found"
-                fi
-            else
-                echo "        Warning: Could not retrieve Grafana admin password"
-            fi
-        fi
         
         # Delete mixed-case user from rbacdb
         echo "      Deleting mixed-case user from rbacdb..."

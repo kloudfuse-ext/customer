@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to automatically fix users where email = login (Okta UID)
+# Script to automatically fix users where email = login 
 # This version doesn't require a CSV file and includes dry-run mode
 # Usage: ./fix_users_auto_with_dryrun.sh [--dry-run] [namespace]
 
@@ -32,7 +32,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 echo "Processing users in namespace: $NAMESPACE"
-echo "Finding and fixing users where email = login (Okta UID format)..."
+echo "Finding and fixing users where email = login..."
 echo ""
 
 # Function to execute or simulate database commands
@@ -48,33 +48,12 @@ execute_db_command() {
     fi
 }
 
-# Function to execute or simulate Grafana deletion
-execute_grafana_delete() {
-    local grafana_user_id="$1"
-    local uid="$2"
-    
-    if [ "$DRY_RUN" = true ]; then
-        echo "      [DRY RUN] Would delete Grafana user: $uid (ID: $grafana_user_id)"
-    else
-        GRAFANA_PASSWORD=$(kubectl get secret kfuse-grafana-credentials -n "$NAMESPACE" -o jsonpath="{.data.admin-password}" | base64 -d)
-        if [ -n "$GRAFANA_PASSWORD" ]; then
-            GRAFANA_URL="http://kfuse-grafana.$NAMESPACE.svc.cluster.local"
-            DELETE_RESULT=$(kubectl run grafana-delete-temp --image=curlimages/curl:latest --rm -i --restart=Never -n "$NAMESPACE" -- curl -s -X DELETE -u "admin:$GRAFANA_PASSWORD" "$GRAFANA_URL/api/admin/users/$grafana_user_id" 2>/dev/null)
-            
-            if [ $? -eq 0 ] && [[ "$DELETE_RESULT" == *"User deleted"* ]]; then
-                echo "    Successfully deleted user from Grafana"
-            else
-                echo "    Warning: Failed to delete user from Grafana - $DELETE_RESULT"
-            fi
-        fi
-    fi
-}
 
-# Find all users where email = login and email looks like an Okta UID
+# Find all users where email = login and email 
 users_to_fix=$(kubectl exec "$POD_NAME" -n "$NAMESPACE" -- sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -U $DB_USER -d $DB_NAME -t -c \"SELECT DISTINCT login FROM users WHERE email = login;\"")
 
 if [ -z "$users_to_fix" ]; then
-    echo "No users found with email = login in Okta UID format"
+    echo "No users found with email = login"
     exit 0
 fi
 
@@ -151,37 +130,6 @@ while read -r uid; do
                 # Always delete the user with email=login
                 echo "  Deleting user with email=login: $user_with_uid_email"
                 
-                # Delete user from Grafana
-                echo "  Attempting to delete user from Grafana..."
-                
-                if [ "$DRY_RUN" = true ]; then
-                    echo "    [DRY RUN] Would check and delete user from Grafana: $uid"
-                else
-                    # Get Grafana admin password
-                    GRAFANA_PASSWORD=$(kubectl get secret kfuse-grafana-credentials -n "$NAMESPACE" -o jsonpath="{.data.admin-password}" | base64 -d)
-                    
-                    if [ -n "$GRAFANA_PASSWORD" ]; then
-                        GRAFANA_URL="http://kfuse-grafana.$NAMESPACE.svc.cluster.local"
-                        
-                        echo "    Searching for user in Grafana with login: $uid"
-                        USER_SEARCH=$(kubectl run grafana-curl-temp --image=curlimages/curl:latest --rm -i --restart=Never -n "$NAMESPACE" -- curl -s -u "admin:$GRAFANA_PASSWORD" "$GRAFANA_URL/api/users/lookup?loginOrEmail=$uid" 2>/dev/null)
-                        
-                        if [ $? -eq 0 ] && [ -n "$USER_SEARCH" ] && [[ "$USER_SEARCH" != *"error"* ]]; then
-                            GRAFANA_USER_ID=$(echo "$USER_SEARCH" | grep -o '"id":[0-9]*' | cut -d':' -f2)
-                            
-                            if [ -n "$GRAFANA_USER_ID" ] && [ "$GRAFANA_USER_ID" != "null" ]; then
-                                echo "    Found Grafana user with ID: $GRAFANA_USER_ID"
-                                execute_grafana_delete "$GRAFANA_USER_ID" "$uid"
-                            else
-                                echo "    User not found in Grafana"
-                            fi
-                        else
-                            echo "    Could not search for user in Grafana or user not found"
-                        fi
-                    else
-                        echo "    Warning: Could not retrieve Grafana admin password"
-                    fi
-                fi
                 
                 # Delete from rbacdb
                 execute_db_command "DELETE FROM users WHERE id = '$user_with_uid_email';" "Delete user with email=login"
