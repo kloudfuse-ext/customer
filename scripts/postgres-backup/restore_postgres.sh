@@ -3,13 +3,14 @@
 # PostgreSQL Restore Script
 # Usage: ./restore_postgres.sh <target-namespace> <target-pod-name> <backup-directory>
 
-TARGET_NAMESPACE=${1:-"dom"}
+TARGET_NAMESPACE=$1
 TARGET_POD_NAME=${2:-"kfuse-configdb-0"}
-BACKUP_DIR=${3}
+BACKUP_DIR=${3:-$2}
 
-if [ -z "$BACKUP_DIR" ]; then
-    echo "Usage: $0 <target-namespace> <target-pod-name> <backup-directory>"
-    echo "Example: $0 dom kfuse-configdb-0 postgres_backup_20250923_114020"
+if [ -z "$TARGET_NAMESPACE" ] || [ -z "$BACKUP_DIR" ]; then
+    echo "Usage: $0 <target-namespace> [target-pod-name] <backup-directory>"
+    echo "Example: $0 staging postgres_backup_20250923_114020"
+    echo "Default pod-name: kfuse-configdb-0"
     exit 1
 fi
 

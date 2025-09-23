@@ -3,8 +3,15 @@
 # PostgreSQL Backup Script
 # Usage: ./backup_postgres.sh <namespace> <pod-name>
 
-NAMESPACE=${1:-"suryakant"}
+NAMESPACE=$1
 POD_NAME=${2:-"kfuse-configdb-0"}
+
+if [ -z "$NAMESPACE" ]; then
+    echo "Usage: $0 <namespace> [pod-name]"
+    echo "Example: $0 production"
+    echo "Default pod-name: kfuse-configdb-0"
+    exit 1
+fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="postgres_backup_${TIMESTAMP}"
 
