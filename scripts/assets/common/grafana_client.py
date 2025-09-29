@@ -181,7 +181,7 @@ class GrafanaClient:
                 # If the rule group response is empty, add all alerts from alert_data_json
                 rule_group_response["rules"] = alert_data_json["rules"]
         else:
-            log.debug("Rule group not found, using the alert json as is.")
+            log.info("Rule group not found, using the alert json to create a new rule group")
             rule_group_response = alert_data_json
 
         path = f"/api/ruler/grafana/api/v1/rules/{folder_uid}"
@@ -485,3 +485,66 @@ class GrafanaClient:
         else:   
             log.error("Failed to fetch dashboard data from Grafana")
             return None, False
+    
+    def delete_dashboard(self, dashboard_uid):
+        """Delete a dashboard by UID."""
+        path = f"/api/dashboards/uid/{dashboard_uid}"
+        response, success = self._http_delete_request_to_grafana(path)
+        
+        if success:
+            log.info(f"Successfully deleted dashboard with UID: {dashboard_uid}")
+            return True
+        else:
+            log.error(f"Failed to delete dashboard with UID: {dashboard_uid}")
+            return False
+    
+    def delete_dashboard_by_name(self, dashboard_name, folder_name):
+        """Delete a dashboard by name from a specific folder."""
+        # First, get all dashboards in the folder
+        folder_uid = self._get_alert_folder_uid(folder_name)
+        if not folder_uid:
+            log.error(f"Folder not found: {folder_name}")
+            return False
+        
+        # Search for the dashboard in the specific folder
+        response, status = self._http_get_request_to_grafana(path=f"/api/search?folderUIDs={folder_uid}")
+        if not status:
+            log.error(f"Failed to search dashboards in folder: {folder_name}")
+            return False
+        
+        # Find the dashboard by name
+        dashboard_uid = None
+        for dashboard in response:
+            if dashboard.get("title") == dashboard_name:
+                dashboard_uid = dashboard.get("uid")
+                break
+        
+        if not dashboard_uid:
+            log.error(f"Dashboard '{dashboard_name}' not found in folder '{folder_name}'")
+            return False
+        
+        # Delete the dashboard
+        return self.delete_dashboard(dashboard_uid)
+    
+    def delete_all_dashboards_in_folder(self, folder_name):
+        """Delete all dashboards in a specific folder."""
+        dashboard_uids = self.get_dashboard_uids_by_folder(folder_name)
+        
+        if not dashboard_uids:
+            log.info(f"No dashboards found in folder '{folder_name}'")
+            return True
+        
+        deleted_count = 0
+        failed_count = 0
+        
+        log.info(f"Found {len(dashboard_uids)} dashboards in folder '{folder_name}'")
+        
+        for dashboard_uid in dashboard_uids:
+            if self.delete_dashboard(dashboard_uid):
+                deleted_count += 1
+            else:
+                failed_count += 1
+        
+        log.info(f"Deleted {deleted_count} dashboards, {failed_count} failed")
+        
+        return failed_count == 0

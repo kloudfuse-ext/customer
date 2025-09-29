@@ -69,6 +69,22 @@ def parse_args():
             -p password \
             -f "all"
 
+        # Delete dashboard Operations
+        # ----------------
+        # Delete single dashboard named "Dashboard Name" from a folder named "My Dashboard Folder":
+        python dashboard.py delete -s "Dashboard Name" \
+            -f "My Dashboard Folder" \
+            -a http://<your-kloudfuse-instance>.kloudfuse.io/grafana \
+            -u admin \
+            -p password
+
+        # Delete all dashboards from a folder named "My Dashboard Folder" (will prompt for confirmation):
+        python dashboard.py delete -d \
+            -f "My Dashboard Folder" \
+            -a http://<your-kloudfuse-instance>.kloudfuse.io/grafana \
+            -u admin \
+            -p password
+
     """
 
 
@@ -190,27 +206,27 @@ def parse_args():
         help='Download dashboards from all Grafana folders'
     )
 
-    # Delete command (similar structure)
-    # delete_parser = subparsers.add_parser(
-    #     'delete',
-    #     help='Delete alerts from Grafana',
-    #     parents=[parent_parser]
-    # )
-    # delete_mode = delete_parser.add_mutually_exclusive_group(
-    #     required=True
-    # )
-    # delete_mode.add_argument(
-    #     '-s',
-    #     '--dashboard-name',
-    #     metavar='ALERT_NAME',
-    #     help='Name of single alert to delete'
-    # )
-    # delete_mode.add_argument(
-    #     '-d',
-    #     '--directory',
-    #     action='store_true',
-    #     help='Delete all alerts in folder'
-    # )
+    # Delete command
+    delete_parser = subparsers.add_parser(
+        'delete',
+        help='Delete dashboards from Grafana',
+        parents=[parent_parser]
+    )
+    delete_mode = delete_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    delete_mode.add_argument(
+        '-s',
+        '--dashboard-name',
+        metavar='DASHBOARD_NAME',
+        help='Name of single dashboard to delete'
+    )
+    delete_mode.add_argument(
+        '-d',
+        '--directory',
+        action='store_true',
+        help='Delete all dashboards in folder'
+    )
 
 
     return parser.parse_args()
@@ -396,8 +412,55 @@ class DownloadDashboard(DashboardManager):
         with open(output_path, 'w') as f:
             json.dump(dashboard_payload, f, indent=2)
         log.debug("Saved dashboard to file: {}", output_path)
-            
-    
+
+class DeleteDashboard(DashboardManager):
+    def __init__(self, grafana_client: GrafanaClient, dashboard_folder_name: str):
+        super().__init__(
+            grafana_client=grafana_client,
+            dashboard_folder_name=dashboard_folder_name
+        )
+
+    def process_args(self, dashboard_name, directory):
+        log.debug("dashboard_name={}, directory={}", dashboard_name, directory)
+        if dashboard_name:
+            self._delete_single_dashboard(dashboard_name)
+        elif directory:
+            self._delete_all_dashboards_from_folder()
+        else:
+            log.error("Invalid arguments provided.")
+            exit(1)
+
+    def _delete_single_dashboard(self, dashboard_name):
+        log.info("Deleting dashboard: {} from folder: {}", dashboard_name, self.dashboard_folder_name)
+        success = self.gc.delete_dashboard_by_name(dashboard_name, self.dashboard_folder_name)
+        if not success:
+            log.error("Failed to delete dashboard: {}", dashboard_name)
+            exit(1)
+        log.info("Successfully deleted dashboard: {}", dashboard_name)
+
+    def _delete_all_dashboards_from_folder(self):
+        log.info("Deleting all dashboards from folder: {}", self.dashboard_folder_name)
+        
+        # Get confirmation for bulk deletion
+        dashboard_uids = self.gc.get_dashboard_uids_by_folder(self.dashboard_folder_name)
+        if not dashboard_uids:
+            log.info("No dashboards found in folder: {}", self.dashboard_folder_name)
+            return
+        
+        log.warning("About to delete {} dashboards from folder: {}", len(dashboard_uids), self.dashboard_folder_name)
+        log.warning("This action cannot be undone!")
+        
+        # Add a simple confirmation prompt
+        response = input("Are you sure you want to delete all dashboards? (yes/no): ")
+        if response.lower() != 'yes':
+            log.info("Deletion cancelled.")
+            return
+        
+        success = self.gc.delete_all_dashboards_in_folder(self.dashboard_folder_name)
+        if not success:
+            log.error("Some dashboards failed to delete")
+            exit(1)
+        log.info("Successfully deleted all dashboards from folder: {}", self.dashboard_folder_name)
 
 if __name__ == "__main__":
     log.info("Executing={}", ' '.join(sys.argv))
@@ -437,6 +500,15 @@ if __name__ == "__main__":
             directory=args.directory,
             output=args.output,
             multi_directory=args.multi_directory,
+        )
+    elif args.command == "delete":
+        d = DeleteDashboard(
+            grafana_client=grafana_client,
+            dashboard_folder_name=dashboard_folder_name
+        )
+        d.process_args(
+            dashboard_name=args.dashboard_name,
+            directory=args.directory,
         )
     else:
         log.error("Invalid command provided.")
