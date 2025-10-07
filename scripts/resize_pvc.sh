@@ -36,6 +36,7 @@ do
     kubectl delete sts $sts_name --cascade=orphan -n $namespace
     echo "applying updated $sts_name yaml"
     kubectl apply -f updated_$sts_name.yaml
+    kubectl rollout restart sts $sts_name -n $namespace
     echo Make sure that the helm values.yaml reflects the updated disk size.
   done
 done
