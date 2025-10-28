@@ -2,7 +2,7 @@
 
 When you scale your Apache Kafka cluster by adding more broker instances, you also need to **rebalance** the partition distribution to make use of the new capacity. Kafka does **not** automatically redistribute partitions, so if you skip rebalancing, your new brokers sit idle while old ones remain overloaded.
 
-This guide walks through how to rebalance Kafka partitions using the CLI tools, including how to get the broker list from ZooKeeper.
+This guide walks through how to rebalance Kafka partitions using the CLI tools, including how to get the broker list in KRaft.
 
 ---
 
@@ -16,7 +16,7 @@ This guide walks through how to rebalance Kafka partitions using the CLI tools, 
 
 ## 🔧 Step-by-Step: Kafka Rebalancing Guide
 
-### ✅ Step 0: Get the Broker List from ZooKeeper
+### ✅ Step 0: Get the Broker List in KRaft
 
 Use it if partitions are imbalanced. You can check the data directory to see if there is imbalance.
 
@@ -27,20 +27,17 @@ num_replicas=$(kubectl get statefulsets.apps kafka | grep -v "NAME" | awk '{prin
 
 for i in <broker-ids> ;do echo "usage for kafka-broker-${i}"; kubectl exec -it kafka-broker-${i} -- du -hd1 /bitnami/kafka/data | grep -v "__consumer" | grep -v "__transaction" ; done
 ```
+
 If you have 3 broker replicas, the <broker-ids> will be 0 1 2
 
-### ✅ Step 1: Get the Broker List from ZooKeeper
-
-If you're using ZooKeeper (not KRaft mode), get the list of broker IDs like this:
-
-```bash
-zkCli.sh -server localhost:2181
-```
+### ✅ Step 1: Get the Broker List in KRaft
 
 Then run inside the shell:
 
 ```bash
-ls /brokers/ids
+kubectl exec -ti -n kfuse kafka-broker-0 -- bash
+unset JMX_PORT
+kafka-broker-api-versions.sh --bootstrap-server :9092 | sed -n 's/.*id: \([0-9]\+\).*/\1/p'
 ```
 
 You'll get output like:
@@ -131,7 +128,7 @@ Open and review `reassign-plan.json`. It should look like:
 }
 ```
 
-The above command will print out the `Current partition replica assignment` and `Proposed partition reassignment configuration`. Ignore the proposed output. Only the `Proposed partition reassignment` is needed. 
+The above command will print out the `Current partition replica assignment` and `Proposed partition reassignment configuration`. Ignore the proposed output. Only the `Proposed partition reassignment` is needed.
 
 Don't save the files in `/tmp` directory as that directory gets cleared up on pod restart. Instead save it in `/bitnami/kafka` directory (which is on pvc) Save the `Current partition replica assignment` to `topics.current.json` file Save the `Proposed partition reassignment` to `topics.balanced.json` file. Format the `Proposed partition replica assignment` in standard JSON format and make sure it looks reasonable and distributes partitions across all brokers.
 
@@ -174,4 +171,3 @@ Re-run the above command to check the status of reassignment. This will provide 
 ## 🧠 Wrapping Up
 
 Adding Kafka brokers is just step one. Without rebalancing, you won’t get the performance boost or reliability benefits of a bigger cluster. Use the steps above to do it right and ensure your cluster is balanced and efficient.:1
-
