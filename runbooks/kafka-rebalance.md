@@ -86,11 +86,12 @@ cat > /bitnami/kafka/topics.json
     { "topic": "kf_events_topic" },
     { "topic": "kf_logs_metric_topic" },
     { "topic": "kf_logs_topic" },
+    { "topic": "logs_ingest_topic" }
     { "topic": "kf_metrics_topic" },
+    { "topic": "kf_metrics_rollup_topic" },
     { "topic": "kf_traces_errors_topic" },
     { "topic": "kf_traces_metric_topic" },
     { "topic": "kf_traces_topic" },
-    { "topic": "logs_ingest_topic" }
   ]
 }
 ```
