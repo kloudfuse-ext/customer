@@ -58,7 +58,7 @@ class GrafanaClient:
                 response.content)
             )
             success = False
-        log.info("http {0} to url {1}".format(request_type, full_url))
+        log.debug("http {0} to url {1}".format(request_type, full_url))
         return response, success
 
     def _http_get_request_to_grafana(self, path: str) -> Tuple:
@@ -104,26 +104,112 @@ class GrafanaClient:
     def _create_alert_folder_if_not_exists(self, folder: str):
         """
         Create a new alert folder and returns the automatically created internal folderID
+        Handles nested folders by creating the hierarchy if needed.
 
-        :param folder: name of the folder to be created
+        :param folder: name of the folder to be created (can be nested path like "parent/child/grandchild")
         :return
             bool: True: if folder was created/exists, False otherwise
             FolderUID: In case successful, else None
         """
-        folder_info, exists = self._check_if_folder_exists(folder)
-        if exists:
-            log.debug("Folder already exists; folder = {0}".format(folder_info))
-            return True, folder_info["uid"]
+        # Check if this is a nested folder path
+        if '/' in folder:
+            # Split the path into parts
+            folder_parts = folder.split('/')
+            parent_uid = None
 
+            # Create/traverse the folder hierarchy
+            for i, folder_part in enumerate(folder_parts):
+                current_path = '/'.join(folder_parts[:i+1])
+
+                # Check if this folder already exists at the current level
+                folder_uid = self._find_folder_at_level(folder_part, parent_uid)
+
+                if folder_uid:
+                    log.debug("Found existing folder: {} (UID: {})", folder_part, folder_uid)
+                    parent_uid = folder_uid
+                else:
+                    # Create the folder at this level
+                    log.info("Creating folder: {} under parent: {}", folder_part, parent_uid or "root")
+                    created, new_uid = self._create_folder_with_parent(folder_part, parent_uid)
+                    if not created:
+                        log.error("Failed to create folder: {}", folder_part)
+                        return False, None
+                    parent_uid = new_uid
+
+            return True, parent_uid
+        else:
+            # Single folder (not nested) - use original logic
+            folder_info, exists = self._check_if_folder_exists(folder)
+            if exists:
+                log.debug("Folder already exists; folder = {0}".format(folder_info))
+                return True, folder_info["uid"]
+
+            path = "/api/folders"
+            data = json.dumps({"title": f"{folder}"})
+            status = self._http_post_request_to_grafana(path=path, post_data=data)
+            if not status:
+                log.error("Failed to create folder; folder = {0}".format(folder))
+                return status, None
+
+            log.debug("Folder={0} created...".format(folder))
+            return True, self._get_alert_folder_uid(folder)
+
+    def _find_folder_at_level(self, folder_name, parent_uid=None):
+        """
+        Find a folder with the given name at the specified level (under parent_uid).
+
+        :param folder_name: Name of the folder to find
+        :param parent_uid: UID of the parent folder, None for root level
+        :return: Folder UID if found, None otherwise
+        """
+        if parent_uid is None:
+            # Looking at root level
+            find_folder_api = "/api/folders"
+            folders_response, status = self._http_get_request_to_grafana(find_folder_api)
+            if status:
+                for folder in folders_response:
+                    if folder.get('title') == folder_name:
+                        return folder.get('uid')
+        else:
+            # Looking for subfolder under parent
+            search_api = f"/api/search?folderUIDs={parent_uid}&type=dash-folder"
+            search_response, status = self._http_get_request_to_grafana(search_api)
+            if status:
+                for item in search_response:
+                    if item.get('type') == 'dash-folder' and item.get('title') == folder_name:
+                        return item.get('uid')
+
+        return None
+
+    def _create_folder_with_parent(self, folder_name, parent_uid=None):
+        """
+        Create a folder under a specific parent folder.
+
+        :param folder_name: Name of the folder to create
+        :param parent_uid: UID of the parent folder, None for root level
+        :return: (success_bool, folder_uid)
+        """
         path = "/api/folders"
-        data = json.dumps({"title": f"{folder}"})
-        status = self._http_post_request_to_grafana(path=path, post_data=data)
-        if not status:
-            log.error("Failed to create folder; folder = {0}".format(folder))
-            return status, None
 
-        log.debug("Folder={0} created...".format(folder))
-        return True, self._get_alert_folder_uid(folder)
+        if parent_uid:
+            # Create folder under parent
+            data = json.dumps({
+                "title": folder_name,
+                "parentUid": parent_uid
+            })
+        else:
+            # Create folder at root level
+            data = json.dumps({"title": folder_name})
+
+        response, status = self._http_post_request_to_grafana(path=path, post_data=data)
+
+        if status and response:
+            created_uid = response.get('uid')
+            log.info("Created folder '{}' with UID: {}", folder_name, created_uid)
+            return True, created_uid
+        else:
+            log.error("Failed to create folder: {}", folder_name)
+            return False, None
 
     def _get_alert_folder_uid(self, folder_name):
         """
@@ -469,6 +555,96 @@ class GrafanaClient:
         else:
             log.error(f"Error fetching dashboards in folder {folder_id}")
             return []
+
+    def get_all_folders_recursive(self):
+        """Gets all folders including nested ones recursively."""
+        all_folders = []
+
+        # Get root level folders
+        find_folder_api = "/api/folders"
+        folders_response, status = self._http_get_request_to_grafana(find_folder_api)
+
+        if not status:
+            log.error("Failed to fetch folders")
+            return []
+
+        # Process each folder and check for nested content
+        for folder in folders_response:
+            folder_uid = folder.get('uid')
+            folder_title = folder.get('title')
+
+            if folder_uid and folder_title:
+                all_folders.append({
+                    'uid': folder_uid,
+                    'title': folder_title,
+                    'path': folder_title
+                })
+
+                # Get nested folders by checking folder details
+                nested = self._get_nested_folders(folder_uid, folder_title)
+                all_folders.extend(nested)
+
+        return all_folders
+
+    def _get_nested_folders(self, parent_uid, parent_path):
+        """Recursively get nested folders under a parent folder."""
+        nested_folders = []
+
+        # Get folder details including children
+        folder_detail_api = f"/api/folders/{parent_uid}"
+        folder_details, status = self._http_get_request_to_grafana(folder_detail_api)
+
+        if not status:
+            return nested_folders
+
+        # Search for items in this folder
+        search_api = f"/api/search?folderUIDs={parent_uid}&type=dash-folder"
+        search_response, search_status = self._http_get_request_to_grafana(search_api)
+
+        if search_status and search_response:
+            for item in search_response:
+                if item.get('type') == 'dash-folder':
+                    child_uid = item.get('uid')
+                    child_title = item.get('title')
+
+                    if child_uid and child_title:
+                        child_path = f"{parent_path}/{child_title}"
+                        nested_folders.append({
+                            'uid': child_uid,
+                            'title': child_title,
+                            'path': child_path,
+                            'parent_uid': parent_uid
+                        })
+
+                        # Recursively get children of this folder
+                        sub_nested = self._get_nested_folders(child_uid, child_path)
+                        nested_folders.extend(sub_nested)
+
+        return nested_folders
+
+    def get_dashboards_in_folder_recursive(self, folder_uid):
+        """Get all dashboards in a folder and its subfolders."""
+        all_dashboards = []
+
+        # Get dashboards in current folder
+        response, status = self._http_get_request_to_grafana(path=f"/api/search?folderUIDs={folder_uid}&type=dash-db")
+        if status:
+            all_dashboards.extend([dashboard["uid"] for dashboard in response if dashboard.get("type") == "dash-db"])
+
+        # Get subfolders and their dashboards
+        search_api = f"/api/search?folderUIDs={folder_uid}&type=dash-folder"
+        subfolder_response, subfolder_status = self._http_get_request_to_grafana(search_api)
+
+        if subfolder_status and subfolder_response:
+            for subfolder in subfolder_response:
+                if subfolder.get('type') == 'dash-folder':
+                    child_uid = subfolder.get('uid')
+                    if child_uid:
+                        # Recursively get dashboards from subfolders
+                        child_dashboards = self.get_dashboards_in_folder_recursive(child_uid)
+                        all_dashboards.extend(child_dashboards)
+
+        return all_dashboards
 
 
     def download_dashboard(self, dashboard_identifier, is_uid=False):
