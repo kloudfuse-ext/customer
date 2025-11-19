@@ -365,31 +365,107 @@ class DownloadDashboard(DashboardManager):
 
     def _download_all_dashboards_from_folder(self, folder_name, directory):
         log.debug("Downloading all dashboards from folder: {}", folder_name)
-        dashboards_uids = self.gc.get_dashboard_uids_by_folder(folder_name=folder_name)
-        for dashboard_uid in dashboards_uids:
+
+        # Find all folders that match the name, path, or UID (there might be multiple with same path but different UIDs)
+        matching_folders = []
+        all_folders = self.gc.get_all_folders_recursive()
+
+        for folder in all_folders:
+            # Match by title, path, or UID
+            if (folder['title'] == folder_name or
+                folder['path'] == folder_name or
+                folder['uid'] == folder_name):
+                matching_folders.append(folder)
+                log.info("[>] Found folder: {} (UID: {})", folder['path'], folder['uid'])
+
+        if not matching_folders:
+            log.error("[X] Folder not found: {}", folder_name)
+            return
+
+        # If multiple folders found with same name/path, process all of them
+        if len(matching_folders) > 1:
+            log.info("[>>] Found {} folders with path '{}'", len(matching_folders), folder_name)
+
+        all_dashboard_uids = set()  # Use set to avoid duplicates if same dashboard appears in multiple folders
+
+        # Process each matching folder
+        for folder in matching_folders:
+            folder_uid = folder['uid']
+            folder_path = folder['path']
+
+            # Get all dashboards recursively (including from subfolders)
+            dashboards_uids = self.gc.get_dashboards_in_folder_recursive(folder_uid)
+
+            if dashboards_uids:
+                log.info("[*] Found {} dashboard(s) in '{}' (UID: {})",
+                        len(dashboards_uids), folder_path, folder_uid)
+                all_dashboard_uids.update(dashboards_uids)
+            else:
+                log.debug("No dashboards in '{}' (UID: {})", folder_path, folder_uid)
+
+        if not all_dashboard_uids:
+            log.warning("[!] No dashboards found in any of the matching folders")
+            return
+
+        log.info("[=] Total unique dashboards to download: {}", len(all_dashboard_uids))
+
+        for dashboard_uid in all_dashboard_uids:
             dashboard_payload, found = self.gc.download_dashboard(
                 dashboard_uid,
                 is_uid=True
             )
             if not found:
-                log.error("Dashboard not found: {}", dashboard_uid)
-                exit(1)
+                log.warning("[!] Skipping missing dashboard: {}", dashboard_uid)
+                continue
             title= dashboard_payload['dashboard']['title']
             title = title.replace(" ", "_")
             title = title.replace("/", "_")
             os.makedirs(directory, exist_ok=True)
             output_path = os.path.join(directory, f"{title}.json")
             self._save_dashboard_to_file(dashboard_payload, output_path)
+            log.info("[+] Downloaded dashboard: {}", title)
 
     def _download_all_dashboards_from_grafana(self, multi_directory):
         log.debug("Downloading all dashboards from Grafana")
-        find_folder_api = "/api/folders"
-        folders_response = self.gc._http_get_request_to_grafana(find_folder_api)
+        all_folders = self.gc.get_all_folders_recursive()
 
-        for folder in folders_response[0]:
-            folder_name = folder["title"]
-            folder_output_dir = os.path.join("./", folder_name)
-            self._download_all_dashboards_from_folder(folder_name=folder_name, directory=folder_output_dir)
+        processed_uids = set()  # Track processed folder UIDs to avoid duplicates
+
+        for folder in all_folders:
+            folder_uid = folder['uid']
+            folder_path = folder['path']
+
+            # Skip if we've already processed this folder
+            if folder_uid in processed_uids:
+                continue
+
+            processed_uids.add(folder_uid)
+
+            # Create directory structure matching folder hierarchy
+            folder_output_dir = os.path.join("./", folder_path)
+
+            # Get dashboards only from this specific folder (not subfolders, as they'll be processed separately)
+            response, status = self.gc._http_get_request_to_grafana(path=f"/api/search?folderUIDs={folder_uid}&type=dash-db")
+
+            if status and response:
+                dashboards_in_folder = [dash["uid"] for dash in response if dash.get("type") == "dash-db"]
+
+                if dashboards_in_folder:
+                    log.info("[*] Downloading {} dashboard(s) from folder: {}", len(dashboards_in_folder), folder_path)
+                    os.makedirs(folder_output_dir, exist_ok=True)
+
+                    for dashboard_uid in dashboards_in_folder:
+                        dashboard_payload, found = self.gc.download_dashboard(dashboard_uid, is_uid=True)
+
+                        if not found:
+                            log.warning("[!] Skipping missing dashboard: {}", dashboard_uid)
+                            continue
+
+                        title = dashboard_payload['dashboard']['title']
+                        title = title.replace(" ", "_").replace("/", "_")
+                        output_path = os.path.join(folder_output_dir, f"{title}.json")
+                        self._save_dashboard_to_file(dashboard_payload, output_path)
+                        log.info("[+] Downloaded dashboard: {} -> {}", title, folder_output_dir)
 
 
     def _save_dashboard_to_file(self, dashboard_payload, output_path):
@@ -400,12 +476,16 @@ class DownloadDashboard(DashboardManager):
     
 
 if __name__ == "__main__":
-    log.info("Executing={}", ' '.join(sys.argv))
+    # Configure logger to show only time and message (no module/function names)
+    log.remove()
+    log.add(sys.stderr, format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {message}", level="INFO")
+
+    log.info("Executing: {}", ' '.join(sys.argv))
     args = parse_args()
 
     if args.debug:
         log.remove()
-        log.add(sys.stderr, level="DEBUG")
+        log.add(sys.stderr, format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {message}", level="DEBUG")
 
     grafana_client = GrafanaClient(
         grafana_server=args.grafana_address,
