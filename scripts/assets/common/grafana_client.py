@@ -201,10 +201,17 @@ class GrafanaClient:
             # Create folder at root level
             data = json.dumps({"title": folder_name})
 
-        response, status = self._http_post_request_to_grafana(path=path, post_data=data)
+        # Use _handle_http_request_to_grafana directly to get the response JSON
+        response, status = self._handle_http_request_to_grafana(
+            request_fn=requests.post,
+            path=path,
+            request_type="post",
+            request_body=data
+        )
 
-        if status and response:
-            created_uid = response.get('uid')
+        if status:
+            response_json = response.json()
+            created_uid = response_json.get('uid')
             log.info("Created folder '{}' with UID: {}", folder_name, created_uid)
             return True, created_uid
         else:
@@ -214,11 +221,16 @@ class GrafanaClient:
     def _get_alert_folder_uid(self, folder_name):
         """
         Create a new folder or return existing folder's UID
+        Supports nested folder paths like "parent/child/grandchild"
 
-        :param folder_name: Name of the folder to create/retrieve
+        :param folder_name: Name of the folder to create/retrieve (can be a nested path)
         :return: Folder UID or None
         """
-        # First, try to find existing folder
+        # Check if this is a nested folder path
+        if '/' in folder_name:
+            return self._get_folder_uid_by_path(folder_name)
+
+        # First, try to find existing folder at root level
         find_folder_api = "/api/folders"
         folders_response = self._http_get_request_to_grafana(find_folder_api)
         for f in folders_response[0]:
@@ -226,6 +238,26 @@ class GrafanaClient:
                 return f['uid']
 
         return None
+
+    def _get_folder_uid_by_path(self, folder_path):
+        """
+        Find a folder by traversing a nested path like "parent/child/grandchild"
+
+        :param folder_path: Full path to the folder (e.g., "parent/child/grandchild")
+        :return: Folder UID if found, None otherwise
+        """
+        folder_parts = folder_path.split('/')
+        parent_uid = None
+
+        # Traverse the folder hierarchy
+        for folder_name in folder_parts:
+            folder_uid = self._find_folder_at_level(folder_name, parent_uid)
+            if folder_uid is None:
+                log.error("Folder '{}' not found in path '{}'", folder_name, folder_path)
+                return None
+            parent_uid = folder_uid
+
+        return parent_uid
 
     def create_alert(self, folder, alert_data_json) -> bool:
         """Create alert using sample data for testing.
@@ -242,10 +274,26 @@ class GrafanaClient:
 
         log.debug("Folder UID={0}, Name={1}".format(folder_uid, folder))
 
-        
+
         alert_data_json = json.loads(alert_data_json)
         group_name = alert_data_json["name"]
-        rule_group_response, success = self._http_get_request_to_grafana(path=f"/api/ruler/grafana/api/v1/rules/{folder_uid}/{group_name}")
+
+        # Check if rule group already exists (404 is expected for new groups)
+        path = f"/api/ruler/grafana/api/v1/rules/{folder_uid}/{group_name}"
+        full_url = f"{self._scheme}://{self._server}{path}"
+        auth = None if self._auth_token else HTTPBasicAuth(self._username, self._password)
+        response = requests.get(full_url, auth=auth, headers=self._headers, timeout=30, verify=self.verify)
+
+        if response.status_code == 200:
+            rule_group_response = response.json()
+            success = True
+        else:
+            # Rule group doesn't exist (404 or other non-200 response)
+            log.debug("Rule group '{0}' not found (status={1}) - will create new",
+                     group_name, response.status_code)
+            rule_group_response = None
+            success = False
+
         if success:
         
             # If rule group response rules list is not empty process rule group
