@@ -20,26 +20,19 @@ kfuse-observability-agent:
     clusterAgent:
       confd:
         http_check.yaml: |-
+          ad_identifiers: []
+          cluster_check: true
           init_config:
 
           instances:
             - name: Homepage Check
-              url: https://example.com
+              url: https://kloudfuse.com/oauth2/sign_in
               method: GET
-              timeout: 3
               http_response_status_code: 200
               tags:
                 - team:devops
                 - env:prod
 
-            - name: Internal Service Health
-              url: http://my-service.namespace.svc.cluster.local:8080/health
-              method: GET
-              timeout: 5
-              http_response_status_code: 200
-              tags:
-                - team:backend
-                - env:staging
 
 ```
 
