@@ -1,0 +1,11 @@
+{
+  "uid": "",
+  "name": "test_kfuse_script_api",
+  "type": "email",
+  "settings": {
+    "addresses": "test_api@example.com",
+    "message": "Test message body",
+    "subject": "Test Alert"
+  },
+  "disableResolveMessage": false
+}
