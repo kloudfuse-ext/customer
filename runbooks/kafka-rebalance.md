@@ -23,9 +23,9 @@ Use it if partitions are imbalanced. You can check the data directory to see if 
 Find the # of replicas and their usage
 
 ```bash
-num_replicas=$(kubectl get statefulsets.apps kafka | grep -v "NAME" | awk '{print $2}' | awk -F'/' '{print $2}')
+num_replicas=$(kubectl get statefulsets.apps kafka-kraft-broker | grep -v "NAME" | awk '{print $2}' | awk -F'/' '{print $2}')
 
-for i in <broker-ids> ;do echo "usage for kafka-broker-${i}"; kubectl exec -it kafka-broker-${i} -- du -hd1 /bitnami/kafka/data | grep -v "__consumer" | grep -v "__transaction" ; done
+for i in <broker-ids> ;do echo "usage for kafka-kraft-broker-${i}"; kubectl exec -it kafka-kraft-broker-${i} -- du -hd1 /bitnami/kafka/data | grep -v "__consumer" | grep -v "__transaction" ; done
 ```
 
 If you have 3 broker replicas, the <broker-ids> will be 0 1 2
@@ -35,7 +35,7 @@ If you have 3 broker replicas, the <broker-ids> will be 0 1 2
 Then run inside the shell:
 
 ```bash
-kubectl exec -ti -n kfuse kafka-broker-0 -- bash
+kubectl exec -ti -n kfuse kafka-kraft-broker-0 -- bash
 unset JMX_PORT
 kafka-broker-api-versions.sh --bootstrap-server :9092 | sed -n 's/.*id: \([0-9]\+\).*/\1/p'
 ```
@@ -61,7 +61,7 @@ quit
 You can inspect how partitions are currently distributed across brokers:
 
 ```bash
-kubectl exec -ti -n kfuse kafka-broker-0 -- bash
+kubectl exec -ti -n kfuse kafka-kraft-broker-0 -- bash
 unset JMX_PORT
 /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server :9092 --list
 ```
