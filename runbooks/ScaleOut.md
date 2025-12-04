@@ -39,11 +39,11 @@ To add additional nodes follow the steps below:
 	kubectl port-forward -n kfuse pinot-controller-0 9000:9000
 	```
 	```
-	curl -X POST 'http://localhost:9000/tables/kf_metrics_REALTIME/rebalance?type=REALTIME&dryRun=false&reassignInstances=true&includeConsuming=false&bootstrap=false&downtime=true&bestEfforts=false&lowDiskMode=false&minAvailableReplicas=1'
+	curl -X POST 'http://localhost:9000/tables/kf_metrics_REALTIME/rebalance?type=REALTIME&dryRun=false&preChecks=false&reassignInstances=true&includeConsuming=true&minimizeDataMovement=DISABLE&bootstrap=false&downtime=true&minAvailableReplicas=0&batchSizePerServer=-1&lowDiskMode=false&bestEfforts=false&externalViewStabilizationTimeoutInMs=3600000&maxAttempts=3&updateTargetTier=false&diskUtilizationThreshold=-1&forceCommit=false&forceCommitBatchSize=2147483647&forceCommitBatchStatusCheckTimeoutMs=180000'
 	```
 	Optional if Metrics Rollup is enabled
 	```
-	curl -X POST 'http://localhost:9000/tables/kf_metrics_rollup_REALTIME/rebalance?type=REALTIME&dryRun=false&reassignInstances=true&includeConsuming=false&bootstrap=false&downtime=true&bestEfforts=false&lowDiskMode=false&minAvailableReplicas=1'
+	curl -X POST 'http://localhost:9000/tables/kf_metrics_rollup_REALTIME/rebalance?type=REALTIME&dryRun=false&preChecks=false&reassignInstances=true&includeConsuming=true&minimizeDataMovement=DISABLE&bootstrap=false&downtime=true&minAvailableReplicas=0&batchSizePerServer=-1&lowDiskMode=false&bestEfforts=false&externalViewStabilizationTimeoutInMs=3600000&maxAttempts=3&updateTargetTier=false&diskUtilizationThreshold=-1&forceCommit=false&forceCommitBatchSize=2147483647&forceCommitBatchStatusCheckTimeoutMs=180000'
 	```
 	- For all other tables, pinot will automatically trigger a rebalance.
 
