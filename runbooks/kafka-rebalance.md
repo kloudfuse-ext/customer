@@ -102,11 +102,11 @@ Now generate a plan using the list of broker IDs you got earlier:
 kafka-reassign-partitions.sh \
   --bootstrap-server :9092 \
   --generate \
-  --topics-to-move-json-file topics.json \
-  --broker-list "100,101,102,103" > reassign-plan.json
+  --topics-to-move-json-file /bitnami/kafka/topics.json \
+  --broker-list "100,101,102,103" > /bitnami/kafka/reassign-plan.json
 ```
 
-This writes a JSON plan to `reassign-plan.json`.
+This writes a JSON plan to `/bitnami/kafka/reassign-plan.json`.
 
 ---
 
@@ -131,6 +131,28 @@ Open and review `reassign-plan.json`. It should look like:
 The above command will print out the `Current partition replica assignment` and `Proposed partition reassignment configuration`. Ignore the proposed output. Only the `Proposed partition reassignment` is needed.
 
 Don't save the files in `/tmp` directory as that directory gets cleared up on pod restart. Instead save it in `/bitnami/kafka` directory (which is on pvc) Save the `Current partition replica assignment` to `topics.current.json` file Save the `Proposed partition reassignment` to `topics.balanced.json` file. Format the `Proposed partition replica assignment` in standard JSON format and make sure it looks reasonable and distributes partitions across all brokers.
+
+```bash
+cat <<'EOF' > /bitnami/kafka/topics.balanced.json
+```
+
+```json
+{
+  "version": 1,
+  "partitions": [
+    {
+      "topic": "your-topic",
+      "partition": 0,
+      "replicas": [2, 3],
+      "log_dirs": ["any", "any"]
+    }
+  ]
+}
+
+EOF
+
+```
+
 
 ---
 
