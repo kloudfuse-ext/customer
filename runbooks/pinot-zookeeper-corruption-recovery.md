@@ -61,13 +61,14 @@ or
 
 ### Step 1: Verify Cluster Has Quorum
 
-Before proceeding, confirm at least 2 of 3 nodes (or majority) are healthy:
+Before proceeding, confirm at least 2 of 3 nodes (or majority) are healthy. Use the ZooKeeper 4-letter command `srvr` to check status:
 
 ```bash
-# Check which node is the leader
-kubectl exec -n kfuse pinot-zookeeper-0 -- zkServer.sh status
-kubectl exec -n kfuse pinot-zookeeper-1 -- zkServer.sh status
-kubectl exec -n kfuse pinot-zookeeper-2 -- zkServer.sh status
+# Check status of each node using the 4-letter 'srvr' command
+for i in 0 1 2; do
+  echo "=== pinot-zookeeper-$i ==="
+  kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep -E "Mode|Zxid"
+done
 ```
 
 You should see one node reporting `Mode: leader` and at least one reporting `Mode: follower`.
@@ -89,13 +90,32 @@ The corrupted node will show errors like:
 - `Committed proposal cached out of order`
 - Repeatedly showing `LOOKING` state
 
-### Step 3: Verify Synced Followers Count
+### Step 3: Find the Leader Node and Verify Synced Followers
 
-On the leader node, check synced followers:
+Dynamically determine which node is the leader:
 
 ```bash
-# Set LEADER to the leader node number (e.g., 0, 1, or 2)
-LEADER=1
+# Find the leader node
+LEADER=""
+for i in 0 1 2; do
+  MODE=$(kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep "Mode:" | awk '{print $2}')
+  echo "pinot-zookeeper-$i: $MODE"
+  if [ "$MODE" = "leader" ]; then
+    LEADER=$i
+  fi
+done
+
+if [ -z "$LEADER" ]; then
+  echo "ERROR: Could not determine leader node. Check ZooKeeper status manually."
+else
+  echo "Leader is pinot-zookeeper-$LEADER"
+fi
+```
+
+Then verify synced followers on the leader:
+
+```bash
+# Check synced followers on the leader (use the LEADER value from above)
 kubectl exec -n kfuse pinot-zookeeper-$LEADER -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
 ```
 
@@ -150,19 +170,28 @@ kubectl wait --for=condition=Ready pod/pinot-zookeeper-${NODE} -n kfuse --timeou
 ### Step 5: Verify Node Rejoined as Follower
 
 ```bash
-# Check the node status
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- zkServer.sh status
+# Check the node status using 4-letter command
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- bash -c 'echo "srvr" | nc localhost 2181 | grep Mode'
 ```
 
 Should show `Mode: follower`.
 
 ### Step 6: Verify Synced Followers Restored
 
-On the leader node:
+Find the leader and verify synced followers:
 
 ```bash
-# Set LEADER to the leader node number
-LEADER=1
+# Find the leader node
+LEADER=""
+for i in 0 1 2; do
+  MODE=$(kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep "Mode:" | awk '{print $2}')
+  if [ "$MODE" = "leader" ]; then
+    LEADER=$i
+    break
+  fi
+done
+
+# Check synced followers
 kubectl exec -n kfuse pinot-zookeeper-$LEADER -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
 ```
 
@@ -197,10 +226,10 @@ kubectl wait --for=condition=Ready pod/pinot-zookeeper-${NODE} -n kfuse --timeou
 ### Verify All Nodes Healthy
 
 ```bash
-# Check all nodes
+# Check all nodes using 4-letter command
 for i in 0 1 2; do
   echo "=== pinot-zookeeper-$i ==="
-  kubectl exec -n kfuse pinot-zookeeper-$i -- zkServer.sh status
+  kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep -E "Mode|Zxid"
 done
 ```
 
@@ -264,7 +293,7 @@ Add an alert for ZooKeeper heap pressure:
 
 ## Important Notes
 
-- **No data loss from recovery**: The healthy nodes have the complete ZooKeeper state. The recovered node will sync from them.
+- **No ZooKeeper state loss from recovery**: The healthy nodes have the complete ZooKeeper state. The recovered node will sync from them. However, during an extended outage where Pinot cannot ingest data, Kafka topic retention may expire causing Pinot data loss (see Related Incidents).
 - **Pinot continues operating**: As long as quorum (2 of 3 nodes) is maintained, Pinot services remain available during recovery.
 - **Timing**: Recovery can be done anytime but is best during low-traffic periods as a precaution.
 - **Do not delete data on healthy nodes**: Only clear data on the corrupted node. Clearing a healthy node's data could cause data loss.
@@ -273,4 +302,4 @@ Add an alert for ZooKeeper heap pressure:
 
 ## Related Incidents
 
-- **Dec 18, 2025 - AA Pinot ZooKeeper Corruption**: OOM on pinot-zookeeper-1 killed SyncThread, causing epoch/zxid mismatch. Resolved by deleting corrupted data and restarting pod, resulting in approximately 3–4 hours of data loss after Kafka topic retention expired for backlog messages while Pinot ingestion was stopped during the outage.
+- **Dec 18, 2025 - AA Pinot ZooKeeper Corruption**: OOM on pinot-zookeeper-1 killed SyncThread, causing epoch/zxid mismatch. Resolved by deleting corrupted data and restarting pod. Note: While ZooKeeper state recovery itself has no data loss, the extended outage (~3-4 hours) meant Pinot could not ingest data during that time, and Kafka topic retention expired for backlog messages, resulting in permanent Pinot data loss for that window.
