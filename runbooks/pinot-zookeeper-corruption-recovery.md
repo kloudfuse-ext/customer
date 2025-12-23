@@ -94,8 +94,9 @@ The corrupted node will show errors like:
 On the leader node, check synced followers:
 
 ```bash
-# Replace X with the leader node number
-kubectl exec -n kfuse pinot-zookeeper-X -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
+# Set LEADER to the leader node number (e.g., 0, 1, or 2)
+LEADER=1
+kubectl exec -n kfuse pinot-zookeeper-$LEADER -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
 ```
 
 For a healthy 3-node cluster, this should show `zk_synced_followers 2`.
@@ -109,12 +110,23 @@ For a healthy 3-node cluster, this should show `zk_synced_followers 2`.
 Double-check you have identified the correct corrupted node. **Do not run these commands on a healthy node.**
 
 ```bash
-# Example: if pinot-zookeeper-0 is corrupted
+# Set NODE to the corrupted node number (e.g., 0, 1, or 2)
 NODE=0
 kubectl logs -n kfuse pinot-zookeeper-${NODE} --tail=20 | grep -E "LOOKING|epoch|zxid"
 ```
 
+**STOP: Before proceeding, verify you see corruption errors in the output above.**
+
+You MUST see at least one of these error patterns:
+- `The current epoch ... is older than the last zxid`
+- `Committed proposal cached out of order`
+- `LOOKING` state appearing repeatedly
+
+If you do NOT see these errors, DO NOT proceed - you may have identified the wrong node.
+
 ### Step 2: Delete Corrupted Transaction Logs
+
+Only proceed after confirming corruption errors in Step 1.
 
 ```bash
 # Delete the version-2 directory contents (transaction logs and snapshots)
@@ -149,7 +161,9 @@ Should show `Mode: follower`.
 On the leader node:
 
 ```bash
-kubectl exec -n kfuse pinot-zookeeper-X -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
+# Set LEADER to the leader node number
+LEADER=1
+kubectl exec -n kfuse pinot-zookeeper-$LEADER -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
 ```
 
 Should now show `zk_synced_followers 2` for a 3-node cluster.
@@ -166,8 +180,8 @@ NODE=0  # Set to the corrupted node number
 # Delete all ZK data
 kubectl exec -n kfuse pinot-zookeeper-${NODE} -- rm -rf /bitnami/zookeeper/data/*
 
-# Also clear the datalog directory if separate
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- rm -rf /bitnami/zookeeper/datalog/* 2>/dev/null || true
+# Also clear the datalog directory if it exists
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/datalog ]; then rm -rf /bitnami/zookeeper/datalog/*; fi'
 
 # Delete the pod
 kubectl delete pod -n kfuse pinot-zookeeper-${NODE}
@@ -259,4 +273,4 @@ Add an alert for ZooKeeper heap pressure:
 
 ## Related Incidents
 
-- **Dec 18, 2025 - AA Pinot ZooKeeper Corruption**: OOM on pinot-zookeeper-1 killed SyncThread, causing epoch/zxid mismatch. Resolved by deleting corrupted data and restarting pod. 3-4 hours of data loss due to Kafka retention during outage.
+- **Dec 18, 2025 - AA Pinot ZooKeeper Corruption**: OOM on pinot-zookeeper-1 killed SyncThread, causing epoch/zxid mismatch. Resolved by deleting corrupted data and restarting pod, resulting in approximately 3–4 hours of data loss after Kafka topic retention expired for backlog messages while Pinot ingestion was stopped during the outage.
