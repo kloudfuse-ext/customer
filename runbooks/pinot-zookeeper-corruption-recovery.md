@@ -103,7 +103,11 @@ Dynamically determine which node is the leader:
 LEADER=""
 for i in 0 1 2; do
   MODE=$(kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep "Mode:" | awk '{print $2}')
-  echo "pinot-zookeeper-$i: $MODE"
+  if [[ -z "$MODE" ]]; then
+    echo "pinot-zookeeper-$i: UNREACHABLE (no response to 'srvr' command)"
+  else
+    echo "pinot-zookeeper-$i: $MODE"
+  fi
   if [[ "$MODE" == "leader" ]]; then
     LEADER=$i
     break
