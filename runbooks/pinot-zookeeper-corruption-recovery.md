@@ -147,7 +147,7 @@ fi
 # Validate NODE is within the expected range for a 3-node cluster
 # For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
 if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
-  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: '$NODE'"
+  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: $NODE"
   exit 1
 fi
 
@@ -171,7 +171,7 @@ If you do NOT see these errors, DO NOT proceed - you may have identified the wro
 
 ### Step 2: Delete Corrupted Transaction Logs
 
-Only proceed after confirming corruption errors in Step 1, documenting which NODE you are working on, and having a second engineer review/confirm before running any destructive commands below (especially in production).
+Only proceed after confirming corruption errors in Step 1. Document which NODE you are working on and have a second engineer review and confirm before running any destructive commands below (especially in production).
 
 ```bash
 # Confirm before destructive operation
@@ -255,7 +255,7 @@ fi
 # Ensure NODE is a valid integer for a 3-node cluster
 # For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
 if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
-  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: '$NODE'"
+  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: $NODE"
   exit 1
 fi
 
@@ -313,8 +313,8 @@ done
 ### Verify Metrics
 
 Check these Prometheus queries. Replace the placeholder values with your actual values:
-- `YOUR_ORG_ID`: Your organization ID (e.g., `AA-devops`, `customer-prod`)
-- `YOUR_CLUSTER_NAME`: Your Kubernetes cluster name (e.g., `prod-us-west-2`, `staging-cluster`)
+- `YOUR_ORG_ID`: Your organization ID (e.g., `acme-production`, `acme-staging`)
+- `YOUR_CLUSTER_NAME`: Your Kubernetes cluster name (e.g., `production-us-west-2`, `staging-us-east-1`)
 
 ```promql
 # Should return 3 for a 3-node cluster
