@@ -10,6 +10,8 @@ When a Pinot ZooKeeper node experiences data corruption (typically due to OOM ki
 
 **Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
 
+**Note:** This runbook is designed for standard 3-node ZooKeeper clusters. For larger clusters (e.g., 5-node), adjust the NODE validation range accordingly.
+
 ---
 
 ## Symptoms
@@ -102,12 +104,13 @@ LEADER=""
 for i in 0 1 2; do
   MODE=$(kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep "Mode:" | awk '{print $2}')
   echo "pinot-zookeeper-$i: $MODE"
-  if [ "$MODE" = "leader" ]; then
+  if [[ "$MODE" == "leader" ]]; then
     LEADER=$i
+    break
   fi
 done
 
-if [ -z "$LEADER" ]; then
+if [[ -z "$LEADER" ]]; then
   echo "ERROR: Could not determine leader node. Check ZooKeeper status manually."
   exit 1
 fi
@@ -132,12 +135,19 @@ For a healthy 3-node cluster, this should show `zk_synced_followers 2`.
 Double-check you have identified the correct corrupted node. **Do not run these commands on a healthy node.**
 
 ```bash
-# Set NODE to the corrupted node number (e.g., 0, 1, or 2)
+# Set NODE to the corrupted node number (e.g., 0, 1, or 2 for a 3-node cluster)
 NODE=0
 
 # Validate NODE is within the expected range for a 3-node cluster
+# For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
 if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
-  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster."
+  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: '$NODE'"
+  exit 1
+fi
+
+# Verify the pod exists
+if ! kubectl get pod -n kfuse "pinot-zookeeper-${NODE}" >/dev/null 2>&1; then
+  echo "ERROR: Pod 'pinot-zookeeper-${NODE}' not found in namespace 'kfuse'."
   exit 1
 fi
 
@@ -158,8 +168,16 @@ If you do NOT see these errors, DO NOT proceed - you may have identified the wro
 Only proceed after confirming corruption errors in Step 1, documenting which NODE you are working on, and having a second engineer review/confirm before running any destructive commands below (especially in production).
 
 ```bash
+# Confirm before destructive operation
+echo "About to delete transaction logs on pod: pinot-zookeeper-${NODE}"
+read -r -p "Type 'YES' to confirm: " CONFIRM
+if [[ "$CONFIRM" != "YES" ]]; then
+  echo "Aborted by user."
+  exit 1
+fi
+
 # Delete the version-2 directory contents (transaction logs and snapshots)
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- rm -rf /bitnami/zookeeper/data/version-2
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/data/version-2 ]; then rm -rf /bitnami/zookeeper/data/version-2; fi'
 ```
 
 ### Step 3: Restart the Pod
@@ -194,13 +212,13 @@ Find the leader and verify synced followers:
 LEADER=""
 for i in 0 1 2; do
   MODE=$(kubectl exec -n kfuse pinot-zookeeper-$i -- bash -c 'echo "srvr" | nc localhost 2181' 2>/dev/null | grep "Mode:" | awk '{print $2}')
-  if [ "$MODE" = "leader" ]; then
+  if [[ "$MODE" == "leader" ]]; then
     LEADER=$i
     break
   fi
 done
 
-if [ -z "$LEADER" ]; then
+if [[ -z "$LEADER" ]]; then
   echo "ERROR: No ZooKeeper leader found; cannot check synced followers."
   exit 1
 fi
@@ -221,12 +239,13 @@ If the standard recovery doesn't work, perform a complete data wipe:
 NODE=0  # Set to the corrupted node number
 
 # Validate NODE before running destructive commands
-if [ -z "${NODE:-}" ]; then
+if [[ -z "${NODE:-}" ]]; then
   echo "ERROR: NODE is not set. Please set NODE to the corrupted node number (e.g., 0, 1, 2)."
   exit 1
 fi
 
 # Ensure NODE is a valid integer for a 3-node cluster
+# For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
 if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
   echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: '$NODE'"
   exit 1
@@ -241,13 +260,13 @@ fi
 echo "About to perform a FULL DATA WIPE on pod: pinot-zookeeper-${NODE} (namespace: kfuse)."
 echo "This will delete all ZooKeeper data and the pod itself."
 read -r -p "Type 'YES' to confirm and continue: " CONFIRM
-if [ "$CONFIRM" != "YES" ]; then
+if [[ "$CONFIRM" != "YES" ]]; then
   echo "Aborted by user."
   exit 1
 fi
 
-# Delete all ZK data
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- rm -rf /bitnami/zookeeper/data/*
+# Delete all ZK data (with existence check)
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/data ]; then rm -rf /bitnami/zookeeper/data/*; fi'
 
 # Also clear the datalog directory if it exists
 kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/datalog ]; then rm -rf /bitnami/zookeeper/datalog/*; fi'
@@ -275,7 +294,9 @@ done
 
 ### Verify Metrics
 
-Check these Prometheus queries (replace YOUR_ORG_ID and YOUR_CLUSTER_NAME with actual values):
+Check these Prometheus queries. Replace the placeholder values with your actual values:
+- `YOUR_ORG_ID`: Your organization ID (e.g., `AA-devops`, `customer-prod`)
+- `YOUR_CLUSTER_NAME`: Your Kubernetes cluster name (e.g., `prod-us-west-2`, `staging-cluster`)
 
 ```promql
 # Should return 3 for a 3-node cluster
