@@ -6,7 +6,7 @@ When a Pinot ZooKeeper node experiences data corruption (typically due to OOM ki
 
 **Impact:** The corrupted node cannot participate in the ZooKeeper quorum. If only one node is affected and 2 of 3 nodes remain healthy, the cluster maintains quorum but is at risk - one more failure will cause complete Pinot outage.
 
-**Root Cause:** Java OutOfMemoryError on the ZooKeeper leader kills the SyncThread, which is responsible for writing transaction logs, causing incomplete writes and an epoch/zxid mismatch.
+**Root Cause:** Java OutOfMemoryError on the ZooKeeper leader kills the SyncThread, which is responsible for writing transaction logs, causing incomplete writes and an epoch/zxid mismatch. (Note: "zxid" stands for ZooKeeper Transaction ID, a unique identifier for each transaction in the ZooKeeper log.)
 
 **Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
 
@@ -139,19 +139,20 @@ For a healthy 3-node cluster, this should show `zk_synced_followers 2`.
 Double-check you have identified the correct corrupted node. **Do not run these commands on a healthy node.**
 
 ```bash
-# Set NODE to the corrupted node number (e.g., 0, 1, or 2 for a 3-node cluster)
+# Set NODE to the corrupted node number as a single digit (0, 1, or 2 for a 3-node cluster)
+# Do not use leading zeros (e.g., use "1" not "01")
 NODE=0
 
 # Validate NODE is set
 if [[ -z "${NODE:-}" ]]; then
-  echo "ERROR: NODE is not set. Please set NODE to the corrupted node number (e.g., 0, 1, 2)."
+  echo "ERROR: NODE is not set. Please set NODE to the corrupted node number (single digit: 0, 1, or 2)."
   exit 1
 fi
 
 # Validate NODE is within the expected range for a 3-node cluster
-# For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
+# NODE must be a single digit. For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
 if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
-  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: $NODE"
+  echo "ERROR: NODE must be a single digit 0, 1, or 2 for a 3-node cluster. Current value: $NODE"
   exit 1
 fi
 
@@ -181,7 +182,7 @@ Only proceed after confirming corruption errors in Step 1. Document which NODE y
 # Confirm before destructive operation
 echo "About to delete transaction logs on pod: pinot-zookeeper-${NODE}"
 read -r -p "Type 'YES' to confirm: " CONFIRM
-if [[ "$CONFIRM" != "YES" ]]; then
+if [[ "${CONFIRM^^}" != "YES" ]]; then
   echo "Aborted by user."
   exit 1
 fi
@@ -217,7 +218,7 @@ Should show `Mode: follower`.
 
 Find the leader and verify synced followers:
 
-> **Note:** The leader-finding logic below is intentionally duplicated from Pre-Recovery Checks Step 3 to allow each section to be executed independently. For frequent use, consider creating a reusable shell function or script.
+> **Note:** The leader-finding logic below is intentionally duplicated from Pre-Recovery Checks Step 3 to allow each section to be executed independently via copy-paste. For frequent use or automation, consider extracting this logic into a reusable shell function (e.g., `find_zk_leader()`) in a shared script that can be sourced.
 
 ```bash
 # Find the leader node
@@ -282,7 +283,7 @@ echo ""
 echo "About to perform a FULL DATA WIPE on pod: pinot-zookeeper-${NODE} (namespace: kfuse)."
 echo "This will delete all ZooKeeper data and the pod itself."
 read -r -p "Type 'YES' to confirm and continue: " CONFIRM
-if [[ "$CONFIRM" != "YES" ]]; then
+if [[ "${CONFIRM^^}" != "YES" ]]; then
   echo "Aborted by user."
   exit 1
 fi
@@ -317,15 +318,15 @@ done
 ### Verify Metrics
 
 Check these Prometheus queries. Replace the placeholder values with your actual values:
-- `YOUR_ORG_ID`: Your organization ID (e.g., `acme-production`, `acme-staging`)
-- `YOUR_CLUSTER_NAME`: Your Kubernetes cluster name (e.g., `production-us-west-2`, `staging-us-east-1`)
+- `<ORG_ID>`: Your organization ID (e.g., `acme-production`, `acme-staging`)
+- `<KUBE_CLUSTER_NAME>`: Your Kubernetes cluster name (e.g., `production-us-west-2`, `staging-us-east-1`)
 
 ```promql
 # Should return 3 for a 3-node cluster
-count by (org_id, kube_cluster_name) (zookeeper_uptime{org_id="YOUR_ORG_ID", kube_cluster_name="YOUR_CLUSTER_NAME"})
+count by (org_id, kube_cluster_name) (zookeeper_uptime{org_id="<ORG_ID>", kube_cluster_name="<KUBE_CLUSTER_NAME>"})
 
 # Leader should report 2 for a 3-node cluster
-zookeeper_synced_followers{org_id="YOUR_ORG_ID", kube_cluster_name="YOUR_CLUSTER_NAME"}
+zookeeper_synced_followers{org_id="<ORG_ID>", kube_cluster_name="<KUBE_CLUSTER_NAME>"}
 ```
 
 ### Verify Pinot Services
