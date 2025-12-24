@@ -138,6 +138,12 @@ Double-check you have identified the correct corrupted node. **Do not run these 
 # Set NODE to the corrupted node number (e.g., 0, 1, or 2 for a 3-node cluster)
 NODE=0
 
+# Validate NODE is set
+if [[ -z "${NODE:-}" ]]; then
+  echo "ERROR: NODE is not set. Please set NODE to the corrupted node number (e.g., 0, 1, 2)."
+  exit 1
+fi
+
 # Validate NODE is within the expected range for a 3-node cluster
 # For larger clusters, adjust the regex pattern (e.g., ^[0-4]$ for 5-node)
 if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
@@ -177,7 +183,7 @@ if [[ "$CONFIRM" != "YES" ]]; then
 fi
 
 # Delete the version-2 directory contents (transaction logs and snapshots)
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/data/version-2 ]; then rm -rf /bitnami/zookeeper/data/version-2; fi'
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- bash -c 'if [ -d /bitnami/zookeeper/data/version-2 ]; then rm -rf /bitnami/zookeeper/data/version-2; fi'
 ```
 
 ### Step 3: Restart the Pod
@@ -206,6 +212,8 @@ Should show `Mode: follower`.
 ### Step 6: Verify Synced Followers Restored
 
 Find the leader and verify synced followers:
+
+> **Note:** The leader-finding logic below is intentionally duplicated from Pre-Recovery Checks Step 3 to allow each section to be executed independently. For frequent use, consider creating a reusable shell function or script.
 
 ```bash
 # Find the leader node
@@ -257,6 +265,16 @@ if ! kubectl get pod -n kfuse "pinot-zookeeper-${NODE}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Check for corruption errors before proceeding
+echo "=== Checking for corruption errors on pinot-zookeeper-${NODE} ==="
+kubectl logs -n kfuse pinot-zookeeper-${NODE} --tail=20 | grep -E "LOOKING|epoch|zxid"
+
+echo ""
+echo "STOP: Before proceeding, verify you see corruption errors in the output above."
+echo "You MUST see at least one of: 'epoch ... zxid', 'out of order', or repeated 'LOOKING' state."
+echo "If you do NOT see these errors, DO NOT proceed - you may have identified the wrong node."
+echo ""
+
 echo "About to perform a FULL DATA WIPE on pod: pinot-zookeeper-${NODE} (namespace: kfuse)."
 echo "This will delete all ZooKeeper data and the pod itself."
 read -r -p "Type 'YES' to confirm and continue: " CONFIRM
@@ -266,10 +284,10 @@ if [[ "$CONFIRM" != "YES" ]]; then
 fi
 
 # Delete all ZK data (with existence check)
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/data ]; then rm -rf /bitnami/zookeeper/data/*; fi'
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- bash -c 'if [ -d /bitnami/zookeeper/data ]; then rm -rf /bitnami/zookeeper/data/*; fi'
 
 # Also clear the datalog directory if it exists
-kubectl exec -n kfuse pinot-zookeeper-${NODE} -- sh -c 'if [ -d /bitnami/zookeeper/datalog ]; then rm -rf /bitnami/zookeeper/datalog/*; fi'
+kubectl exec -n kfuse pinot-zookeeper-${NODE} -- bash -c 'if [ -d /bitnami/zookeeper/datalog ]; then rm -rf /bitnami/zookeeper/datalog/*; fi'
 
 # Delete the pod
 kubectl delete pod -n kfuse pinot-zookeeper-${NODE}
