@@ -6,7 +6,9 @@ When a Pinot ZooKeeper node experiences data corruption (typically due to OOM ki
 
 **Impact:** The corrupted node cannot participate in the ZooKeeper quorum. If only one node is affected and 2 of 3 nodes remain healthy, the cluster maintains quorum but is at risk - one more failure will cause complete Pinot outage.
 
-**Root Cause:** Java OutOfMemoryError on the ZooKeeper leader kills the SyncThread responsible for writing transaction logs, causing incomplete writes and epoch/zxid mismatch.
+**Root Cause:** Java OutOfMemoryError on the ZooKeeper leader kills the SyncThread, which is responsible for writing transaction logs, causing incomplete writes and an epoch/zxid mismatch.
+
+**Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
 
 ---
 
@@ -15,7 +17,7 @@ When a Pinot ZooKeeper node experiences data corruption (typically due to OOM ki
 ### Log Messages Indicating Corruption
 
 ```
-java.io.IOException: The current epoch, b8, is older than the last zxid, 794568949761
+java.io.IOException: The current epoch, b8, is older than the last zxid, 0xb9003a0001
     at org.apache.zookeeper.server.quorum.QuorumPeer.loadDataBase(QuorumPeer.java:1178)
 ```
 
@@ -107,16 +109,16 @@ done
 
 if [ -z "$LEADER" ]; then
   echo "ERROR: Could not determine leader node. Check ZooKeeper status manually."
-else
-  echo "Leader is pinot-zookeeper-$LEADER"
+  exit 1
 fi
+echo "Leader is pinot-zookeeper-$LEADER"
 ```
 
 Then verify synced followers on the leader:
 
 ```bash
 # Check synced followers on the leader (use the LEADER value from above)
-kubectl exec -n kfuse pinot-zookeeper-$LEADER -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
+kubectl exec -n kfuse pinot-zookeeper-"$LEADER" -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
 ```
 
 For a healthy 3-node cluster, this should show `zk_synced_followers 2`.
@@ -132,6 +134,13 @@ Double-check you have identified the correct corrupted node. **Do not run these 
 ```bash
 # Set NODE to the corrupted node number (e.g., 0, 1, or 2)
 NODE=0
+
+# Validate NODE is within the expected range for a 3-node cluster
+if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
+  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster."
+  exit 1
+fi
+
 kubectl logs -n kfuse pinot-zookeeper-${NODE} --tail=20 | grep -E "LOOKING|epoch|zxid"
 ```
 
@@ -146,7 +155,7 @@ If you do NOT see these errors, DO NOT proceed - you may have identified the wro
 
 ### Step 2: Delete Corrupted Transaction Logs
 
-Only proceed after confirming corruption errors in Step 1.
+Only proceed after confirming corruption errors in Step 1, documenting which NODE you are working on, and having a second engineer review/confirm before running any destructive commands below (especially in production).
 
 ```bash
 # Delete the version-2 directory contents (transaction logs and snapshots)
@@ -191,8 +200,13 @@ for i in 0 1 2; do
   fi
 done
 
+if [ -z "$LEADER" ]; then
+  echo "ERROR: No ZooKeeper leader found; cannot check synced followers."
+  exit 1
+fi
+
 # Check synced followers
-kubectl exec -n kfuse pinot-zookeeper-$LEADER -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
+kubectl exec -n kfuse pinot-zookeeper-"$LEADER" -- bash -c 'echo "mntr" | nc localhost 2181 | grep synced_followers'
 ```
 
 Should now show `zk_synced_followers 2` for a 3-node cluster.
@@ -205,6 +219,32 @@ If the standard recovery doesn't work, perform a complete data wipe:
 
 ```bash
 NODE=0  # Set to the corrupted node number
+
+# Validate NODE before running destructive commands
+if [ -z "${NODE:-}" ]; then
+  echo "ERROR: NODE is not set. Please set NODE to the corrupted node number (e.g., 0, 1, 2)."
+  exit 1
+fi
+
+# Ensure NODE is a valid integer for a 3-node cluster
+if [[ ! "$NODE" =~ ^[0-2]$ ]]; then
+  echo "ERROR: NODE must be 0, 1, or 2 for a 3-node cluster. Current value: '$NODE'"
+  exit 1
+fi
+
+# Verify that the target pod exists
+if ! kubectl get pod -n kfuse "pinot-zookeeper-${NODE}" >/dev/null 2>&1; then
+  echo "ERROR: Pod 'pinot-zookeeper-${NODE}' not found in namespace 'kfuse'."
+  exit 1
+fi
+
+echo "About to perform a FULL DATA WIPE on pod: pinot-zookeeper-${NODE} (namespace: kfuse)."
+echo "This will delete all ZooKeeper data and the pod itself."
+read -r -p "Type 'YES' to confirm and continue: " CONFIRM
+if [ "$CONFIRM" != "YES" ]; then
+  echo "Aborted by user."
+  exit 1
+fi
 
 # Delete all ZK data
 kubectl exec -n kfuse pinot-zookeeper-${NODE} -- rm -rf /bitnami/zookeeper/data/*
@@ -235,14 +275,14 @@ done
 
 ### Verify Metrics
 
-Check these Prometheus queries:
+Check these Prometheus queries (replace YOUR_ORG_ID and YOUR_CLUSTER_NAME with actual values):
 
 ```promql
 # Should return 3 for a 3-node cluster
-count by (org_id) (zookeeper_uptime{org_id="YOUR_ORG_ID"})
+count by (org_id, kube_cluster_name) (zookeeper_uptime{org_id="YOUR_ORG_ID", kube_cluster_name="YOUR_CLUSTER_NAME"})
 
 # Leader should report 2 for a 3-node cluster
-zookeeper_synced_followers{org_id="YOUR_ORG_ID"}
+zookeeper_synced_followers{org_id="YOUR_ORG_ID", kube_cluster_name="YOUR_CLUSTER_NAME"}
 ```
 
 ### Verify Pinot Services
