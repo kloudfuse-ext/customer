@@ -9,7 +9,6 @@ X-Disable-Provenance: true to strip it.
 """
 
 import argparse
-import json
 import sys
 import urllib.parse
 from dataclasses import dataclass, field
@@ -101,6 +100,8 @@ def check_grafana_reachable(session, base_url):
 
 def make_request(session, method, url, summary, **kwargs):
     """Make an HTTP request and track it in the summary."""
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 30
     resp = session.request(method, url, **kwargs)
     summary.api_calls.append(APICall(method=method, url=url, status_code=resp.status_code))
     return resp
@@ -191,7 +192,7 @@ def print_summary(summary, dry_run):
     print(f"  Total folders scanned:                    {summary.total_folders}")
     print(f"  Total groups scanned:                     {summary.total_groups}")
     print(f"  Total alerts scanned:                     {summary.total_alerts}")
-    print(f"  Groups with matching kloudfuse alerts:     {summary.groups_with_matching_alerts}")
+    print(f"  Groups with matching Kloudfuse alerts:     {summary.groups_with_matching_alerts}")
     print(f"  Groups with provenance:                   {summary.groups_with_provenance}")
 
     if dry_run:
@@ -206,17 +207,23 @@ def print_summary(summary, dry_run):
         print(f"\n{'─' * 70}")
         print("GROUP DETAILS")
         print(f"{'─' * 70}")
-        for i, gc in enumerate(summary.group_changes, 1):
-            status = ""
-            if not dry_run:
-                status = " [OK]" if gc.success else f" [FAILED: {gc.error}]"
-            print(f"\n  {i}. Folder: {gc.folder_name} (UID: {gc.folder_uid})")
-            print(f"     Group:  {gc.group_name}")
-            print(f"     Total alerts in group: {gc.total_alerts_in_group}")
-            print(f"     Provenance values: {', '.join(gc.provenance_values)}")
-            print(f"     Matching alerts ({len(gc.matching_alert_titles)}):{status}")
-            for title in gc.matching_alert_titles:
-                print(f"       - {title}")
+
+        # Group by folder to avoid repeating folder info
+        folders = {}
+        for gc in summary.group_changes:
+            key = (gc.folder_name, gc.folder_uid)
+            folders.setdefault(key, []).append(gc)
+
+        for (folder_name, folder_uid), groups in folders.items():
+            print(f"\n  Folder: {folder_name} (UID: {folder_uid})")
+            print(f"  Groups: {len(groups)}")
+            for gc in groups:
+                status = ""
+                if not dry_run:
+                    status = " [OK]" if gc.success else f" [FAILED: {gc.error}]"
+                print(f"    - {gc.group_name} ({gc.total_alerts_in_group} alerts, provenance: {', '.join(gc.provenance_values)}){status}")
+                for title in gc.matching_alert_titles:
+                    print(f"        {title}")
 
     print(f"\n{'─' * 70}")
     print("API CALLS")
@@ -253,18 +260,19 @@ def main():
     print("Fetching all alert rules via Ruler API...")
     all_rules = fetch_all_rules(session, base_url, summary)
 
-    summary.total_folders = len(all_rules)
-    print(f"Found {summary.total_folders} folder(s)\n")
+    print(f"Found {len(all_rules)} folder(s)\n")
 
     # Step 2: Iterate and filter
+    processed_folders = set()
     for folder_name, rule_groups in all_rules.items():
         if args.folder and folder_name != args.folder:
             continue
+        processed_folders.add(folder_name)
         for group in rule_groups:
-            summary.total_groups += 1
             group_name = group.get("name", "")
             if args.group and group_name != args.group:
                 continue
+            summary.total_groups += 1
             rules = group.get("rules", [])
             summary.total_alerts += len(rules)
 
@@ -287,6 +295,21 @@ def main():
             summary.groups_with_provenance += 1
             folder_uid = get_folder_uid_from_group(rules)
             provenance_values = get_provenance_values(rules)
+
+            if not folder_uid:
+                gc = GroupChange(
+                    folder_name=folder_name,
+                    folder_uid="",
+                    group_name=group_name,
+                    matching_alert_titles=matching_titles,
+                    total_alerts_in_group=len(rules),
+                    provenance_values=provenance_values,
+                    error="Could not determine folder UID from rules",
+                )
+                print(f"  SKIP: folder={folder_name}, group={group_name} — missing folder UID")
+                summary.groups_failed += 1
+                summary.group_changes.append(gc)
+                continue
 
             gc = GroupChange(
                 folder_name=folder_name,
@@ -333,6 +356,7 @@ def main():
             summary.groups_changed += 1
             summary.group_changes.append(gc)
 
+    summary.total_folders = len(processed_folders)
     print_summary(summary, args.dry_run)
 
 
