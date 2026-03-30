@@ -2,10 +2,15 @@
 """
 Strip provenance from Grafana alert rule groups.
 
-Fetches all alerts via the Ruler API, filters those with 'ruleType' in
+Connects to Grafana through the platform proxy (nginx → user-mgmt-service),
+fetches all alerts via the Ruler API, filters those with 'ruleType' in
 annotations and data length 3 or 4, checks if any alert in the group has
 provenance, and PUTs the group back via the provisioning API with
 X-Disable-Provenance: true to strip it.
+
+Auth is handled via X-Auth-Request-* headers that the platform proxy
+normally sets.  When running locally or via port-forward, the script sets
+these headers directly.
 """
 
 import argparse
@@ -14,6 +19,11 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 import requests
+
+# Kloudfuse alerts have 3 data entries (query, reduce, threshold) or 4 (adds a
+# no-data/error handler).  Other Grafana-native alerts use different structures,
+# so the data-array length serves as a lightweight Kloudfuse-origin check.
+KLOUDFUSE_ALERT_DATA_LENGTHS = (3, 4)
 
 
 @dataclass
@@ -56,13 +66,17 @@ def parse_args():
     parser.add_argument(
         "--url",
         required=True,
-        help="Kloudfuse platform URL (e.g. https://playground.kloudfuse.io)",
+        help="Platform URL (e.g. http://localhost:9000 or https://playground.kloudfuse.io)",
     )
     parser.add_argument(
-        "--username", required=True, help="Username for authentication"
+        "--username",
+        required=True,
+        help="Username for X-Auth-Request-User header",
     )
     parser.add_argument(
-        "--password", required=True, help="Password for authentication"
+        "--email",
+        required=True,
+        help="Email for X-Auth-Request-Email header (used for audit logging)",
     )
     parser.add_argument(
         "--folder",
@@ -72,14 +86,17 @@ def parse_args():
     parser.add_argument(
         "--group",
         default=None,
-        help="Only process this group name (optional, for targeted runs)",
+        help="Only process this group name (requires --folder)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be changed without making PUT calls",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.group and not args.folder:
+        parser.error("--group requires --folder")
+    return args
 
 
 def check_grafana_reachable(session, base_url):
@@ -110,7 +127,8 @@ def make_request(session, method, url, summary, **kwargs):
 def fetch_all_rules(session, base_url, summary):
     """Fetch all alert rules via the Ruler API."""
     url = f"{base_url}/grafana/api/ruler/grafana/api/v1/rules?subtype=cortex"
-    resp = make_request(session, "GET", url, summary)
+    headers = {"X-Kloudfuse-Enrich-Alert": "false"}
+    resp = make_request(session, "GET", url, summary, headers=headers)
     if resp.status_code != 200:
         print(f"ERROR: Failed to fetch rules: {resp.status_code} {resp.text}")
         sys.exit(1)
@@ -122,7 +140,7 @@ def rule_matches_filter(rule):
     annotations = rule.get("annotations", {}) or {}
     grafana_alert = rule.get("grafana_alert", {}) or {}
     data = grafana_alert.get("data", []) or []
-    return "ruleType" in annotations and len(data) in (3, 4)
+    return "ruleType" in annotations and len(data) in KLOUDFUSE_ALERT_DATA_LENGTHS
 
 
 def group_has_provenance(rules):
@@ -173,6 +191,7 @@ def put_provisioning_rule_group(session, base_url, folder_uid, group_name, body,
     headers = {
         "Content-Type": "application/json",
         "X-Disable-Provenance": "true",
+        "X-Kloudfuse-Passthrough-Rule-Group": "true",
     }
     resp = make_request(session, "PUT", url, summary, headers=headers, json=body)
     if resp.status_code >= 300:
@@ -188,10 +207,10 @@ def print_summary(summary, dry_run):
 
     mode = "DRY RUN" if dry_run else "LIVE"
     print(f"\nMode: {mode}")
-    print(f"\nScan Results:")
-    print(f"  Total folders scanned:                    {summary.total_folders}")
-    print(f"  Total groups scanned:                     {summary.total_groups}")
-    print(f"  Total alerts scanned:                     {summary.total_alerts}")
+    print(f"\nScan Results (after applying filters):")
+    print(f"  Folders processed:                        {summary.total_folders}")
+    print(f"  Groups processed:                         {summary.total_groups}")
+    print(f"  Alerts processed:                         {summary.total_alerts}")
     print(f"  Groups with matching Kloudfuse alerts:     {summary.groups_with_matching_alerts}")
     print(f"  Groups with provenance:                   {summary.groups_with_provenance}")
 
@@ -241,10 +260,14 @@ def main():
     base_url = args.url.rstrip("/")
 
     session = requests.Session()
-    session.auth = (args.username, args.password)
+    session.headers["X-Auth-Request-User"] = args.username
+    session.headers["X-Auth-Request-Email"] = args.email
+    session.headers["X-Auth-Request-Role"] = "Admin"
+    session.headers["X-Auth-Request-Auth-Type"] = "basic"
 
     print(f"Platform URL: {base_url}")
     print(f"Auth user:    {args.username}")
+    print(f"Auth email:   {args.email}")
     if args.folder:
         print(f"Filter folder: {args.folder}")
     if args.group:
