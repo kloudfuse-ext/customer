@@ -391,6 +391,12 @@ class UploadAlert(AlertManager):
         return all_ok
 
     def _create_alerts_from_multi_dir(self, root_directory: str):
+        if not os.path.exists(root_directory):
+            log.error("[X] Root directory not found: {}", root_directory)
+            return False
+        if not os.path.isdir(root_directory):
+            log.error("[X] Root directory is not a directory: {}", root_directory)
+            return False
         subdirectories = [d for d in os.listdir(root_directory) if os.path.isdir(os.path.join(root_directory, d))]
         all_ok = True
         for subdir in subdirectories:
