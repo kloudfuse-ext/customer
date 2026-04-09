@@ -280,13 +280,16 @@ class UploadAlert(AlertManager):
 
     def process_args(self, single_file, directory, multi_directory):
         if single_file:
-            self._create_alert_from_one_file(single_file)
+            ok = self._create_alert_from_one_file(single_file)
         elif directory:
-            self._create_alert_from_dir(directory)
+            ok = self._create_alert_from_dir(directory)
         elif multi_directory:
-            self._create_alerts_from_multi_dir(multi_directory)
+            ok = self._create_alerts_from_multi_dir(multi_directory)
         else:
             log.error("Invalid arguments provided.")
+            exit(1)
+        if ok is False:
+            log.error("[X] Alert upload failed; see errors above.")
             exit(1)
 
     @staticmethod
@@ -338,9 +341,10 @@ class UploadAlert(AlertManager):
         log.debug("Processing directory: {} {}", directory, subdir)
         if not os.path.isdir(directory):
             log.error("[X] Directory not found: {}", directory)
-            return
+            return False
 
         alert_count = 0
+        all_ok = True
         for root, _, files in os.walk(directory):
             for file in files:
                 alert_payload = {
@@ -380,15 +384,26 @@ class UploadAlert(AlertManager):
                     alert_count += 1
                 else:
                     log.error("[X] Failed to upload alert: {} to folder: {}", alert_payload.get("name", file), target_folder)
+                    all_ok = False
 
         if alert_count > 0:
             log.info("[=] Total alert groups uploaded from directory: {}", alert_count)
-    
+        return all_ok
+
     def _create_alerts_from_multi_dir(self, root_directory: str):
+        if not os.path.exists(root_directory):
+            log.error("[X] Root directory not found: {}", root_directory)
+            return False
+        if not os.path.isdir(root_directory):
+            log.error("[X] Root directory is not a directory: {}", root_directory)
+            return False
         subdirectories = [d for d in os.listdir(root_directory) if os.path.isdir(os.path.join(root_directory, d))]
+        all_ok = True
         for subdir in subdirectories:
             log.debug("Pre-Processing directory: {} {}", root_directory, subdir)
-            self._create_alert_from_dir(os.path.join(root_directory, subdir), subdir)
+            if self._create_alert_from_dir(os.path.join(root_directory, subdir), subdir) is False:
+                all_ok = False
+        return all_ok
 
 
 class DownloadAlert(AlertManager):
