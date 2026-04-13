@@ -1,0 +1,154 @@
+{
+  "name": "system-group",
+  "interval": "1m",
+  "rules": [
+    {
+      "expr": "",
+      "for": "0s",
+      "labels": {
+        "Severity": "Warning"
+      },
+      "annotations": {
+        "Kloudfuse Source": "{{ reReplaceAll pathPrefix \"\" externalURL }}/#/alerts/details/{{ $labels.__alert_rule_uid__ }}?folderTitle={{ reReplaceAll \" \" \"%20\"  $labels.grafana_folder }}{{ range $key, $value := $labels }}&matcher={{ $key }}%3D{{ reReplaceAll \" \" \"%20\" $value }}{{ end }}",
+        "alertType": "threshold",
+        "defaultZero": "",
+        "description": "{{ $labels.org_id }}, {{ $labels.kube_cluster_name }} 20% of the nodes in the cluster have not be schedulable for the last 15 minutes.",
+        "forWindow": "15m",
+        "ruleType": "metrics",
+        "summary": "Nodes cannot be scheduled"
+      },
+      "grafana_alert": {
+        "id": 218,
+        "orgId": 1,
+        "title": "Nodes cannot be scheduled",
+        "condition": "C",
+        "data": [
+          {
+            "refId": "A",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 900,
+              "to": 0
+            },
+            "datasourceUid": "P09C4D52DEC9B98E6",
+            "model": {
+              "datasource": {
+                "type": "prometheus"
+              },
+              "expr": "( sum by (org_id, kube_cluster_name)(kubernetes_state_node_status{kfuse=\"true\",status=\"schedulable\",kf_node=~\".+\"}) )*100/( sum by (org_id, kube_cluster_name)(kubernetes_state_node_status{kfuse=\"true\",kf_node=~\".+\"}) )",
+              "hide": false,
+              "interval": "15s",
+              "intervalMs": 15000,
+              "maxDataPoints": 43200,
+              "range": true,
+              "refId": "A"
+            }
+          },
+          {
+            "refId": "B",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      80
+                    ],
+                    "type": "lt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "max"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "A",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "reducer": "max",
+              "refId": "B",
+              "settings": {
+                "mode": "dropNN"
+              },
+              "type": "reduce"
+            }
+          },
+          {
+            "refId": "C",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      80
+                    ],
+                    "type": "lt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "max"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "B",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "refId": "C",
+              "type": "threshold"
+            }
+          }
+        ],
+        "updated": "2025-04-26T22:29:26Z",
+        "intervalSeconds": 60,
+        "version": 5571,
+        "uid": "aa1ba9f6-b4c8-4b0c-820a-76f6ba60de87",
+        "namespace_uid": "b52d4a03-cd0e-4eea-a199-546a2fc53047",
+        "rule_group": "system-group",
+        "no_data_state": "OK",
+        "exec_err_state": "KeepLast",
+        "is_paused": false
+      }
+    }
+  ]
+}

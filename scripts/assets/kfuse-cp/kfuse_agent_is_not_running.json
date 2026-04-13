@@ -1,0 +1,154 @@
+{
+  "name": "kloudfuse_alerts_group",
+  "interval": "1m",
+  "rules": [
+    {
+      "expr": "",
+      "for": "0s",
+      "labels": {
+        "Severity": "Warning"
+      },
+      "annotations": {
+        "Kloudfuse Source": "{{ reReplaceAll pathPrefix \"\" externalURL }}/#/alerts/details/{{ $labels.__alert_rule_uid__ }}?folderTitle={{ reReplaceAll \" \" \"%20\"  $labels.grafana_folder }}{{ range $key, $value := $labels }}&matcher={{ $key }}%3D{{ reReplaceAll \" \" \"%20\" $value }}{{ end }}",
+        "alertType": "threshold",
+        "defaultZero": "",
+        "description": "{{ $labels.org_id }}, {{ $labels.kube_cluster_name }}, {{ $labels.kube_namespace }}: agent is not running on {{ $labels.host }} for the last 10 minutes",
+        "forWindow": "10m",
+        "ruleType": "metrics",
+        "summary": "Kfuse-agent is not running on host"
+      },
+      "grafana_alert": {
+        "id": 228,
+        "orgId": 1,
+        "title": "Kfuse-agent is not running on host",
+        "condition": "C",
+        "data": [
+          {
+            "refId": "A",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 600,
+              "to": 0
+            },
+            "datasourceUid": "P09C4D52DEC9B98E6",
+            "model": {
+              "datasource": {
+                "type": "prometheus"
+              },
+              "expr": "sum by (org_id, kube_cluster_name, host)(datadog_agent_running{kfuse=\"true\"})",
+              "hide": false,
+              "interval": "15s",
+              "intervalMs": 15000,
+              "maxDataPoints": 43200,
+              "range": true,
+              "refId": "A"
+            }
+          },
+          {
+            "refId": "B",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      1
+                    ],
+                    "type": "lt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "max"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "A",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "reducer": "max",
+              "refId": "B",
+              "settings": {
+                "mode": "dropNN"
+              },
+              "type": "reduce"
+            }
+          },
+          {
+            "refId": "C",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      1
+                    ],
+                    "type": "lt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "max"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "B",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "refId": "C",
+              "type": "threshold"
+            }
+          }
+        ],
+        "updated": "2025-04-26T22:32:48Z",
+        "intervalSeconds": 60,
+        "version": 63,
+        "uid": "fdc85533-a5a0-442c-b77e-927b6b3b09b3",
+        "namespace_uid": "b52d4a03-cd0e-4eea-a199-546a2fc53047",
+        "rule_group": "kloudfuse_alerts_group",
+        "no_data_state": "OK",
+        "exec_err_state": "KeepLast",
+        "is_paused": false
+      }
+    }
+  ]
+}

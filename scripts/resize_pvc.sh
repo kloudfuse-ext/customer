@@ -1,4 +1,3 @@
-set -x
 sts_name=$1
 size=$2
 namespace=$3

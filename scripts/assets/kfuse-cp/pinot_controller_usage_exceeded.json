@@ -1,0 +1,154 @@
+{
+  "name": "kloudfuse_alerts_group",
+  "interval": "1m",
+  "rules": [
+    {
+      "expr": "",
+      "for": "5m",
+      "labels": {
+        "Severity": "Warning"
+      },
+      "annotations": {
+        "Kloudfuse Source": "{{ reReplaceAll pathPrefix \"\" externalURL }}/#/alerts/details/{{ $labels.__alert_rule_uid__ }}?folderTitle={{ reReplaceAll \" \" \"%20\"  $labels.grafana_folder }}{{ range $key, $value := $labels }}&matcher={{ $key }}%3D{{ reReplaceAll \" \" \"%20\" $value }}{{ end }}",
+        "alertType": "threshold",
+        "defaultZero": "",
+        "description": "{{ $labels.org_id }}, {{ $labels.kube_cluster_name }}, {{ $labels.kube_namespace }}: Pinot Controller is consuming more than 15 cores",
+        "forWindow": "5m",
+        "ruleType": "metrics",
+        "summary": "Pinot Controller usage exceeded 15 cores"
+      },
+      "grafana_alert": {
+        "id": 5776,
+        "orgId": 1,
+        "title": "Pinot Controller usage exceeded 15 cores",
+        "condition": "C",
+        "data": [
+          {
+            "refId": "A",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 300,
+              "to": 0
+            },
+            "datasourceUid": "P09C4D52DEC9B98E6",
+            "model": {
+              "datasource": {
+                "type": "prometheus"
+              },
+              "expr": "( sum by (org_id, kube_namespace)(avg_over_time(container_cpu_usage{kube_service=\"pinot-controller\",kf_node=~\".*\"} [10m])) ) / 10^6",
+              "hide": false,
+              "interval": "15s",
+              "intervalMs": 15000,
+              "maxDataPoints": 43200,
+              "range": true,
+              "refId": "A"
+            }
+          },
+          {
+            "refId": "B",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      15000
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "A",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "reducer": "min",
+              "refId": "B",
+              "settings": {
+                "mode": "dropNN"
+              },
+              "type": "reduce"
+            }
+          },
+          {
+            "refId": "C",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      15000
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "B",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "refId": "C",
+              "type": "threshold"
+            }
+          }
+        ],
+        "updated": "2025-04-26T22:32:48Z",
+        "intervalSeconds": 60,
+        "version": 50,
+        "uid": "bc8d5644-ed46-4750-b741-a611b1b37d82",
+        "namespace_uid": "b52d4a03-cd0e-4eea-a199-546a2fc53047",
+        "rule_group": "kloudfuse_alerts_group",
+        "no_data_state": "OK",
+        "exec_err_state": "KeepLast",
+        "is_paused": false
+      }
+    }
+  ]
+}

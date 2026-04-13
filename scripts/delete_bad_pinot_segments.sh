@@ -3,7 +3,6 @@
 # create a dir for the table and run it from within that dir;
 # it will dump a bunch of status files in case things go wrong we can use to track
 # be careful on which controller you are connecting to
-set -x
 CONTROLLER=localhost:9000
 TABLE=""
 
@@ -37,7 +36,7 @@ if [ -z "$TABLE" ]; then
 fi
 
 # Get a list of segments for a table
-curl -s "http://${CONTROLLER}/tables/${TABLE}_REALTIME/segmentsStatus" > "${TABLE}.new"
+curl -s "http://${CONTROLLER}/tables/${TABLE}/segmentsStatus" > "${TABLE}.new"
 echo "Total segments:"
 cat "${TABLE}.new" | jq '.[].segmentName' | wc -l
 
@@ -51,9 +50,9 @@ read ans
 
 # Fetch segment status
 for seg in `cat "${TABLE}.bad"`; do
-    curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/$seg/metadata?columns=\*" > "${seg}.status"
+    curl -s "http://${CONTROLLER}/segments/${TABLE}/$seg/metadata?columns=\*" > "${seg}.status"
     cat "${seg}.status"
     #read ans
     echo " deleting ${seg}"
-    curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/$seg" -X 'DELETE'
+    curl -s "http://${CONTROLLER}/segments/${TABLE}/$seg" -X 'DELETE'
 done

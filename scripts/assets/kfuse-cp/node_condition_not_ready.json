@@ -1,0 +1,154 @@
+{
+  "name": "system-group",
+  "interval": "1m",
+  "rules": [
+    {
+      "expr": "",
+      "for": "0s",
+      "labels": {
+        "Severity": "Warning"
+      },
+      "annotations": {
+        "Kloudfuse Source": "{{ reReplaceAll pathPrefix \"\" externalURL }}/#/alerts/details/{{ $labels.__alert_rule_uid__ }}?folderTitle={{ reReplaceAll \" \" \"%20\"  $labels.grafana_folder }}{{ range $key, $value := $labels }}&matcher={{ $key }}%3D{{ reReplaceAll \" \" \"%20\" $value }}{{ end }}",
+        "alertType": "threshold",
+        "defaultZero": "",
+        "description": "{{ $labels.org_id }}, {{ $labels.kube_cluster_name }}: Physical node {{ $labels.host }} are experiencing a unusual ({{ $labels.condition }}) condition for the last 10 minutes.",
+        "forWindow": "10m",
+        "ruleType": "metrics",
+        "summary": "Node condition not Ready"
+      },
+      "grafana_alert": {
+        "id": 215,
+        "orgId": 1,
+        "title": "Node condition not Ready",
+        "condition": "C",
+        "data": [
+          {
+            "refId": "A",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 600,
+              "to": 0
+            },
+            "datasourceUid": "P09C4D52DEC9B98E6",
+            "model": {
+              "datasource": {
+                "type": "prometheus"
+              },
+              "expr": "sum by (org_id, kube_cluster_name, node, condition, status)(kubernetes_state_node_by_condition{kfuse=\"true\",status=\"false\",condition=~\"Ready|ready\",kf_node=~\".*\"})",
+              "hide": false,
+              "interval": "15s",
+              "intervalMs": 15000,
+              "maxDataPoints": 43200,
+              "range": true,
+              "refId": "A"
+            }
+          },
+          {
+            "refId": "B",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      0
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "A",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "reducer": "min",
+              "refId": "B",
+              "settings": {
+                "mode": "dropNN"
+              },
+              "type": "reduce"
+            }
+          },
+          {
+            "refId": "C",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      0
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "B",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "refId": "C",
+              "type": "threshold"
+            }
+          }
+        ],
+        "updated": "2025-04-26T22:29:26Z",
+        "intervalSeconds": 60,
+        "version": 5571,
+        "uid": "ca9d4823-eff6-400d-b448-6d8ab76a9f61",
+        "namespace_uid": "b52d4a03-cd0e-4eea-a199-546a2fc53047",
+        "rule_group": "system-group",
+        "no_data_state": "OK",
+        "exec_err_state": "KeepLast",
+        "is_paused": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,155 @@
+{
+  "name": "kfuse-cp_group_1m_1",
+  "interval": "1m",
+  "rules": [
+    {
+      "expr": "",
+      "for": "0s",
+      "labels": {
+        "Severity": "Warning"
+      },
+      "annotations": {
+        "Kloudfuse Source": "{{ reReplaceAll pathPrefix \"\" externalURL }}/#/alerts/details/{{ $labels.__alert_rule_uid__ }}?folderTitle={{ reReplaceAll \" \" \"%20\"  $labels.grafana_folder }}{{ range $key, $value := $labels }}&matcher={{ $key }}%3D{{ reReplaceAll \" \" \"%20\" $value }}{{ end }}",
+        "alertType": "threshold",
+        "created": "2025-04-15T17:25:02.658Z",
+        "description": "{{ $labels.org_id }}, {{ $labels.kube_cluster_name }}-{{ $labels.kube_namespace }}: {{ $labels.pod_name }} Pinot {{ $labels.kube_service }} has trigged a panic, killed all queries and triggered gc in the last 10 minutes.",
+        "extraData": "{\"queryType\":\"query\",\"queries\":[{\"isActive\":true,\"filters\":[{\"disabled\":false,\"type\":\"selectedFacetValue\",\"value\":{\"facet\":\"Core:!:level:!:string:!:\",\"operator\":\"=\",\"values\":{\"error\":1}}},{\"type\":\"searchTerms\",\"value\":\"_panicLevel\"}],\"limit\":{\"direction\":\"topk\",\"count\":\"10\"},\"functions\":[],\"showInput\":false,\"metric\":\"*\",\"normalizeFunction\":\"number\",\"queryKey\":\"a\",\"rangeAggregate\":\"count_over_time\",\"rangeAggregateGrouping\":[\"Additional:!:org_id:!:string\",\"Kubernetes:!:pod_name:!:string\",\"Kubernetes:!:kube_service:!:string\",\"Kubernetes:!:kube_cluster_name:!:string\",\"Kubernetes:!:kube_namespace:!:string\"],\"rangeAggregateExclude\":false,\"step\":\"15s\",\"vectorAggregate\":\"count\",\"vectorAggregateGrouping\":[],\"vectorAggregateExclude\":false,\"filtersState\":{\"state\":[{\"disabled\":false,\"type\":\"selectedFacetValue\",\"value\":{\"facet\":\"Core:!:level:!:string:!:\",\"operator\":\"=\",\"values\":{\"error\":1}}},{\"type\":\"searchTerms\",\"value\":\"_panicLevel\"}]},\"defaultRangeAggregateGroupingOptions\":[{\"value\":\"Additional:!:org_id:!:string\",\"label\":\"Additional:org_id\"},{\"value\":\"Kubernetes:!:pod_name:!:string\",\"label\":\"Kubernetes:pod_name\"},{\"value\":\"Kubernetes:!:kube_service:!:string\",\"label\":\"Kubernetes:kube_service\"},{\"value\":\"Kubernetes:!:kube_cluster_name:!:string\",\"label\":\"Kubernetes:kube_cluster_name\"},{\"label\":\"Kubernetes:kube_namespace\",\"value\":\"Kubernetes:!:kube_namespace:!:string\"}]}],\"formulas\":[],\"queryKey\":\"Query (a)\",\"queryLangType\":\"kfuseql\"}",
+        "forWindow": "10m",
+        "ruleType": "logs",
+        "summary": "Pinot service has panicked"
+      },
+      "grafana_alert": {
+        "id": 5784,
+        "orgId": 1,
+        "title": "Pinot service has panicked",
+        "condition": "C",
+        "data": [
+          {
+            "refId": "A",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 600,
+              "to": 0
+            },
+            "datasourceUid": "P5BE00A3D5765370D",
+            "model": {
+              "datasource": {
+                "type": "loki"
+              },
+              "expr": "  _panicLevel and level=\"error\" | timeslice 15s | count by (_timeslice, org_id, pod_name, kube_service, kube_cluster_name, kube_namespace) | fields _count, _timeslice, org_id, pod_name, kube_service, kube_cluster_name, kube_namespace",
+              "hide": false,
+              "interval": "15s",
+              "intervalMs": 15000,
+              "maxDataPoints": 43200,
+              "range": true,
+              "refId": "A"
+            }
+          },
+          {
+            "refId": "B",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      1
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "A",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "reducer": "min",
+              "refId": "B",
+              "settings": {
+                "mode": "dropNN"
+              },
+              "type": "reduce"
+            }
+          },
+          {
+            "refId": "C",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      1
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "B",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "refId": "C",
+              "type": "threshold"
+            }
+          }
+        ],
+        "updated": "2025-04-26T22:46:06Z",
+        "intervalSeconds": 60,
+        "version": 20,
+        "uid": "dej08q29h2fi8d",
+        "namespace_uid": "b52d4a03-cd0e-4eea-a199-546a2fc53047",
+        "rule_group": "kfuse-cp_group_1m_1",
+        "no_data_state": "OK",
+        "exec_err_state": "KeepLast",
+        "is_paused": false
+      }
+    }
+  ]
+}

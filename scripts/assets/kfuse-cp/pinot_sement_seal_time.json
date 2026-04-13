@@ -1,0 +1,156 @@
+{
+  "name": "kfuse-cp_group_1m_1",
+  "interval": "1m",
+  "rules": [
+    {
+      "expr": "",
+      "for": "0s",
+      "labels": {
+        "Severity": "Warning"
+      },
+      "annotations": {
+        "Kloudfuse Source": "{{ reReplaceAll pathPrefix \"\" externalURL }}/#/alerts/details/{{ $labels.__alert_rule_uid__ }}?folderTitle={{ reReplaceAll \" \" \"%20\"  $labels.grafana_folder }}{{ range $key, $value := $labels }}&matcher={{ $key }}%3D{{ reReplaceAll \" \" \"%20\" $value }}{{ end }}",
+        "__dashboardUid__": "kfuse-pinot-cp",
+        "__panelId__": "32",
+        "alertType": "threshold",
+        "defaultZero": "",
+        "description": "{{ $labels.org_id }}, {{ $labels.kube_cluster_name }}, {{ $labels.kube_namespace }}: {{ $labels.table }}, {{ $labels.partition }}, {{ $labels.pod_name }} is taking a longer than 30 minutes to seal a segment.",
+        "forWindow": "30m",
+        "ruleType": "metrics",
+        "summary": "Pinot segment seal time is too long"
+      },
+      "grafana_alert": {
+        "id": 5775,
+        "orgId": 1,
+        "title": "Pinot segment seal time is too long",
+        "condition": "C",
+        "data": [
+          {
+            "refId": "A",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 1800,
+              "to": 0
+            },
+            "datasourceUid": "P09C4D52DEC9B98E6",
+            "model": {
+              "datasource": {
+                "type": "prometheus"
+              },
+              "expr": "max by (org_id, kube_cluster_name, kube_namespace, table, partition, pod_name)(pinot_server_lastRealtimeSegmentCreationDurationSeconds_Value{kfuse=\"true\"})",
+              "hide": false,
+              "interval": "15s",
+              "intervalMs": 15000,
+              "maxDataPoints": 43200,
+              "range": true,
+              "refId": "A"
+            }
+          },
+          {
+            "refId": "B",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      600
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "A",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "reducer": "min",
+              "refId": "B",
+              "settings": {
+                "mode": "dropNN"
+              },
+              "type": "reduce"
+            }
+          },
+          {
+            "refId": "C",
+            "queryType": "",
+            "relativeTimeRange": {
+              "from": 0,
+              "to": 0
+            },
+            "datasourceUid": "-100",
+            "model": {
+              "conditions": [
+                {
+                  "evaluator": {
+                    "params": [
+                      600
+                    ],
+                    "type": "gt"
+                  },
+                  "operator": {
+                    "type": "and"
+                  },
+                  "query": {
+                    "params": [
+                      "C"
+                    ]
+                  },
+                  "reducer": {
+                    "params": [],
+                    "type": "min"
+                  },
+                  "type": "query"
+                }
+              ],
+              "datasource": {
+                "name": "Expression",
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "expression": "B",
+              "hide": false,
+              "intervalMs": 1000,
+              "maxDataPoints": 43200,
+              "refId": "C",
+              "type": "threshold"
+            }
+          }
+        ],
+        "updated": "2025-04-26T22:46:06Z",
+        "intervalSeconds": 60,
+        "version": 44,
+        "uid": "d79fe8cf-90bc-4d94-aaff-4d9dbb729d9b",
+        "namespace_uid": "b52d4a03-cd0e-4eea-a199-546a2fc53047",
+        "rule_group": "kfuse-cp_group_1m_1",
+        "no_data_state": "OK",
+        "exec_err_state": "KeepLast",
+        "is_paused": false
+      }
+    }
+  ]
+}
