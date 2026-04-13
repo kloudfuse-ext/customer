@@ -1,0 +1,152 @@
+---
+# Java APM Demo
+# Image:     eclipse-temurin:21-jdk-alpine (Docker Hub) — writes + compiles + runs a trace loop inline.
+# Agent:     OpenTelemetry Java agent downloaded by init container (busybox + wget).
+# Traces:    OTLP/HTTP → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces (port 443)
+# Emits:     one trace/second — "database" SERVER span (parent) + "user" CLIENT span (child)
+# Service:   demo-java-service
+#
+# NOTE: first startup takes ~60 s while the init container downloads the javaagent (~15 MB)
+#       and the main container compiles DemoServer.java.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apm-demo-java
+  namespace: steve
+  labels:
+    app: apm-demo-java
+    language: java
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: otel-agent
+      emptyDir: {}
+    - name: app-src
+      emptyDir: {}
+
+  # ---- download OTel javaagent + API compile-time jars into shared volume ----
+  initContainers:
+    - name: otel-agent-init
+      image: busybox
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          OTEL_API_VERSION=1.40.0
+          echo "Downloading OpenTelemetry Java agent..."
+          wget -q -O /agent/opentelemetry-javaagent.jar \
+            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+          echo "Done: $(ls -lh /agent/opentelemetry-javaagent.jar)"
+
+          # The javaagent jar embeds API classes in a nested bootstrap jar — they are
+          # NOT accessible via -cp at compile time. Download the API jars separately
+          # for javac; the javaagent still provides the runtime implementation.
+          echo "Downloading opentelemetry-api ${OTEL_API_VERSION}..."
+          wget -q -O /agent/opentelemetry-api.jar \
+            "https://repo1.maven.org/maven2/io/opentelemetry/opentelemetry-api/${OTEL_API_VERSION}/opentelemetry-api-${OTEL_API_VERSION}.jar"
+          wget -q -O /agent/opentelemetry-context.jar \
+            "https://repo1.maven.org/maven2/io/opentelemetry/opentelemetry-context/${OTEL_API_VERSION}/opentelemetry-context-${OTEL_API_VERSION}.jar"
+          echo "API jars ready."
+      volumeMounts:
+        - name: otel-agent
+          mountPath: /agent
+
+  containers:
+    - name: java-app
+      image: eclipse-temurin:21-jdk-alpine
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+          mkdir -p /app && cd /app
+
+          # ---- write trace loop application ----
+          cat > DemoServer.java << 'JAVACODE'
+          import io.opentelemetry.api.GlobalOpenTelemetry;
+          import io.opentelemetry.api.trace.Span;
+          import io.opentelemetry.api.trace.SpanKind;
+          import io.opentelemetry.api.trace.Tracer;
+          import io.opentelemetry.context.Scope;
+
+          public class DemoServer {
+              public static void main(String[] args) throws Exception {
+                  // The javaagent initializes GlobalOpenTelemetry at JVM startup.
+                  // getTracer() is safe to call after the agent has started.
+                  Tracer tracer = GlobalOpenTelemetry.getTracer("demo-java-service");
+                  System.out.println("demo-java-service starting trace loop (1 trace/second)");
+
+                  while (true) {
+                      // "database" SERVER span — root of the trace
+                      Span serverSpan = tracer.spanBuilder("database")
+                              .setSpanKind(SpanKind.SERVER)
+                              .startSpan();
+                      try (Scope serverScope = serverSpan.makeCurrent()) {
+                          // "user" CLIENT span — child shares the same trace ID
+                          Span clientSpan = tracer.spanBuilder("user")
+                                  .setSpanKind(SpanKind.CLIENT)
+                                  .startSpan();
+                          try (Scope clientScope = clientSpan.makeCurrent()) {
+                              Thread.sleep(50);
+                          } finally {
+                              clientSpan.end();
+                          }
+                      } finally {
+                          serverSpan.end();
+                      }
+
+                      Thread.sleep(950);
+                  }
+              }
+          }
+          JAVACODE
+
+          # ---- compile against the API jars (api + context needed for Scope) ----
+          javac -cp /agent/opentelemetry-api.jar:/agent/opentelemetry-context.jar DemoServer.java
+          exec java \
+            -javaagent:/agent/opentelemetry-javaagent.jar \
+            -cp /app \
+            DemoServer
+      env:
+        # OTel javaagent picks up all OTEL_* env vars automatically.
+        - name: OTEL_SERVICE_NAME
+          value: "demo-java-service"
+        # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT sets the exact URL for traces; the agent
+        # does not append /v1/traces when this signal-specific variable is used.
+        - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          value: "https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_COMPRESSION
+          value: "gzip"
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          valueFrom:
+            secretKeyRef:
+              name: kloudfuse-api-key
+              key: value
+        - name: OTEL_TRACES_SAMPLER
+          value: "parentbased_traceidratio"
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: "1.0"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "deployment.environment.name=dev,service.namespace=apm-demo"
+        - name: OTEL_JAVAAGENT_LOGGING
+          value: "application"
+      volumeMounts:
+        - name: otel-agent
+          mountPath: /agent
+        - name: app-src
+          mountPath: /app
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "256Mi"
+        limits:
+          cpu: "1000m"
+          memory: "512Mi"

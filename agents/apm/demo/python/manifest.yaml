@@ -1,0 +1,101 @@
+---
+# Python APM Demo
+# Image:   python:3.12-slim (Docker Hub) — pip-installs OTel SDK and runs a trace loop inline.
+# Traces:  OTLP/HTTP → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces (port 443)
+# Emits:   one trace/second — "database" SERVER span (parent) + "user" CLIENT span (child)
+# Service: demo-python-service
+#
+# NOTE: first startup takes ~30 s while pip installs OpenTelemetry packages.
+#       Subsequent restarts reuse the pip cache in /pip-cache (emptyDir).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apm-demo-python
+  namespace: steve
+  labels:
+    app: apm-demo-python
+    language: python
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: pip-cache
+      emptyDir: {}
+
+  containers:
+    - name: python-app
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+
+          # ---- install OTel SDK + OTLP HTTP exporter ----
+          pip install --quiet --cache-dir /pip-cache \
+            opentelemetry-sdk \
+            opentelemetry-exporter-otlp-proto-http
+
+          # ---- write trace loop application ----
+          cat > /app.py << 'PYCODE'
+          import time
+          from opentelemetry import trace
+          from opentelemetry.sdk.trace import TracerProvider
+          from opentelemetry.sdk.trace.export import BatchSpanProcessor
+          from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+          from opentelemetry.sdk.resources import Resource
+          from opentelemetry.trace import SpanKind
+
+          # All OTEL_* env vars (endpoint, headers, protocol) are read automatically.
+          resource = Resource.create({
+              "service.name": "demo-python-service",
+              "deployment.environment.name": "dev",
+              "service.namespace": "apm-demo",
+          })
+          provider = TracerProvider(resource=resource)
+          provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+          trace.set_tracer_provider(provider)
+
+          tracer = trace.get_tracer("demo-python-service")
+          print("demo-python-service starting trace loop (1 trace/second)", flush=True)
+
+          while True:
+              # "database" SERVER span — root of the trace
+              with tracer.start_as_current_span("database", kind=SpanKind.SERVER):
+                  # "user" CLIENT span — child shares the same trace ID
+                  with tracer.start_as_current_span("user", kind=SpanKind.CLIENT):
+                      time.sleep(0.05)
+              time.sleep(1)
+          PYCODE
+
+          exec python /app.py
+      env:
+        - name: OTEL_SERVICE_NAME
+          value: "demo-python-service"
+        # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT sets the exact URL for traces; the SDK
+        # does not append /v1/traces when this signal-specific variable is used.
+        - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          value: "https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          valueFrom:
+            secretKeyRef:
+              name: kloudfuse-api-key
+              key: value
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "deployment.environment.name=dev,service.namespace=apm-demo"
+      volumeMounts:
+        - name: pip-cache
+          mountPath: /pip-cache
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
