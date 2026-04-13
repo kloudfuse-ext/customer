@@ -1,7 +1,7 @@
 # APM Demo — Python
 
 A minimal Python application instrumented with the **OpenTelemetry Python SDK**.
-Traces are exported via OTLP/HTTP to `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces`.
+Traces are exported via OTLP/HTTP to `https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces`.
 
 ## How it works
 
@@ -23,16 +23,12 @@ The SDK is initialized programmatically in `app.py`. The application then runs a
 ## Prerequisites
 
 - `kubectl` configured against the `dev_gcp` context
-- A Kloudfuse Ingestion API key (see **Administration → API Keys** in the Kloudfuse UI)
+- A Kloudfuse Ingestion API key (see https://docs.kloudfuse.com/platform/latest/administration/authentication/ingestion-api-key/)
 
 ## How traces reach Kloudfuse
 
-In this deployment the Kloudfuse stack runs directly in the cluster. Traces are
-sent via **OTLP/HTTP** (port 443) through the nginx ingress to the `ingester` service:
-
-```
-pod → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces → ingester:8090
-```
+In this deployment the Trace application is sending SPANS directly to the cluster. Traces are
+sent via **OTLP/HTTP** (port 443)
 
 > **Note:** A standalone `kf-agent` on port 4317/4318 is not deployed in this cluster.
 > OTLP/gRPC to port 4317 will be refused — use the HTTPS ingress path above.
@@ -63,7 +59,7 @@ The HTTP exporter reads `OTEL_EXPORTER_OTLP_HEADERS` automatically — no code c
 ## Deploy
 
 ```bash
-kubectl apply --context dev_gcp -n steve -f manifest.yaml
+kubectl apply -f manifest.yaml
 ```
 
 ## Check the pod is ready
@@ -71,7 +67,7 @@ kubectl apply --context dev_gcp -n steve -f manifest.yaml
 First startup takes ~30 s while `pip install` runs. Watch the logs:
 
 ```bash
-kubectl logs apm-demo-python --context dev_gcp -n steve -f
+kubectl logs apm-demo-python -f
 ```
 
 Wait until you see:
@@ -81,7 +77,7 @@ demo-python-service starting trace loop (1 trace/second)
 
 Check overall pod status:
 ```bash
-kubectl get pod apm-demo-python --context dev_gcp -n steve
+kubectl get pod apm-demo-python
 ```
 
 ## Verify traces in Kloudfuse
@@ -101,7 +97,7 @@ kubectl get pod apm-demo-python --context dev_gcp -n steve
 |---------|-------|
 | Service name | `demo-python-service` |
 | Exporter | OTLP/HTTP |
-| Endpoint | `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces` |
+| Endpoint | `https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces` |
 | Protocol | `http/protobuf` |
 | Authentication | `kf-api-key` header via `OTEL_EXPORTER_OTLP_HEADERS` (from Secret `kloudfuse-api-key`) |
 | Spans emitted | `database` (SERVER, root) → `user` (CLIENT, child) |
@@ -111,5 +107,5 @@ kubectl get pod apm-demo-python --context dev_gcp -n steve
 ## Tear down
 
 ```bash
-kubectl delete pod apm-demo-python --context dev_gcp -n steve
+kubectl delete pod apm-demo-python
 ```

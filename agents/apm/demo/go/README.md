@@ -1,7 +1,7 @@
 # APM Demo — Go
 
 A minimal Go application instrumented with the **OpenTelemetry Go SDK**.
-Traces are exported via OTLP/HTTP to `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces`.
+Traces are exported via OTLP/HTTP to `https://<KFUSE_DNS>/ingester/otlp/traces`.
 
 ## How it works
 
@@ -21,16 +21,13 @@ The application runs a **1-second trace loop** — no HTTP server is involved:
 ## Prerequisites
 
 - `kubectl` configured against the `dev_gcp` context
-- A Kloudfuse Ingestion API key (see **Administration → API Keys** in the Kloudfuse UI)
+- A Kloudfuse Ingestion API key (see https://docs.kloudfuse.com/platform/latest/administration/authentication/ingestion-api-key/)
 
 ## How traces reach Kloudfuse
 
-In this deployment the Kloudfuse stack runs directly in the cluster. Traces are
-sent via **OTLP/HTTP** (port 443) through the nginx ingress to the `ingester` service:
+In this deployment the Trace application is sending SPANS directly to the cluster. Traces are
+sent via **OTLP/HTTP** (port 443)
 
-```
-pod → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces → ingester:8090
-```
 
 > **Note:** A standalone `kf-agent` on port 4317/4318 is not deployed in this cluster.
 > OTLP/gRPC to port 4317 will be refused — use the HTTPS ingress path above.
@@ -99,7 +96,7 @@ demo-go-service starting trace loop (1 trace/second)
 |---------|-------|
 | Service name | `demo-go-service` |
 | Exporter | OTLP/HTTP (`otlptracehttp`) |
-| Endpoint | `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces` |
+| Endpoint | `https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces` |
 | Protocol | `http/protobuf` |
 | Authentication | `kf-api-key` header via `OTEL_EXPORTER_OTLP_HEADERS` (from Secret `kloudfuse-api-key`) |
 | Spans emitted | `database` (SERVER, root) → `user` (CLIENT, child) |

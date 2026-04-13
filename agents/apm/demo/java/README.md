@@ -1,7 +1,7 @@
 # APM Demo — Java
 
 A minimal Java application instrumented with the **OpenTelemetry Java agent** (zero-code / automatic instrumentation).
-Traces are exported via OTLP/HTTP to `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces`.
+Traces are exported via OTLP/HTTP to `https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces`.
 
 ## How it works
 
@@ -29,17 +29,11 @@ obtains a `Tracer` via `GlobalOpenTelemetry.getTracer()` and runs a **1-second t
 ## Prerequisites
 
 - `kubectl` configured against the `dev_gcp` context
-- A Kloudfuse Ingestion API key (see **Administration → API Keys** in the Kloudfuse UI)
-- Outbound internet access from the cluster (init container downloads the agent JAR from GitHub)
+- A Kloudfuse Ingestion API key (see https://docs.kloudfuse.com/platform/latest/administration/authentication/ingestion-api-key/)
 
 ## How traces reach Kloudfuse
 
-In this deployment the Kloudfuse stack runs directly in the cluster. Traces are
-sent via **OTLP/HTTP** (port 443) through the nginx ingress to the `ingester` service:
-
-```
-pod → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces → ingester:8090
-```
+In this deployment the Trace application is sending SPANS directly to the cluster. Traces are sent via **OTLP/HTTP** (port 443)
 
 > **Note:** A standalone `kf-agent` on port 4317/4318 is not deployed in this cluster.
 > OTLP/gRPC to port 4317 will be refused — use the HTTPS ingress path above.
@@ -70,7 +64,7 @@ The Java agent reads `OTEL_EXPORTER_OTLP_HEADERS` automatically — no code chan
 ## Deploy
 
 ```bash
-kubectl apply --context dev_gcp -n steve -f manifest.yaml
+kubectl apply -f manifest.yaml
 ```
 
 ## Check the pod is ready
@@ -79,10 +73,10 @@ First startup takes ~60 s (agent download + Java compilation). Monitor progress:
 
 ```bash
 # Watch init container download the agent
-kubectl logs apm-demo-java --context dev_gcp -n steve -c otel-agent-init -f
+kubectl logs apm-demo-java -c otel-agent-init -f
 
 # Then watch the main container start
-kubectl logs apm-demo-java --context dev_gcp -n steve -c java-app -f
+kubectl logs apm-demo-java -c java-app -f
 ```
 
 Wait until you see:
@@ -92,7 +86,7 @@ demo-java-service starting trace loop (1 trace/second)
 
 Check overall pod status:
 ```bash
-kubectl get pod apm-demo-java --context dev_gcp -n steve
+kubectl get pod apm-demo-java
 ```
 
 ## Verify traces in Kloudfuse
@@ -109,7 +103,7 @@ kubectl get pod apm-demo-java --context dev_gcp -n steve
 To confirm the agent is active, check for agent startup messages in the logs:
 
 ```bash
-kubectl logs apm-demo-java --context dev_gcp -n steve -c java-app | grep -i "opentelemetry"
+kubectl logs apm-demo-java -c java-app | grep -i "opentelemetry"
 ```
 
 You should see lines like:
@@ -123,7 +117,7 @@ You should see lines like:
 |---------|-------|
 | Service name | `demo-java-service` |
 | Exporter | OTLP/HTTP |
-| Endpoint | `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces` |
+| Endpoint | `https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces` |
 | Protocol | `http/protobuf` |
 | Compression | gzip |
 | Authentication | `kf-api-key` header via `OTEL_EXPORTER_OTLP_HEADERS` (from Secret `kloudfuse-api-key`) |
@@ -136,5 +130,5 @@ You should see lines like:
 ## Tear down
 
 ```bash
-kubectl delete pod apm-demo-java --context dev_gcp -n steve
+kubectl delete pod apm-demo-java
 ```
