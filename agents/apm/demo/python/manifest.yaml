@@ -1,7 +1,7 @@
 ---
 # Python APM Demo
 # Image:   python:3.12-slim (Docker Hub) — pip-installs OTel SDK and runs a trace loop inline.
-# Traces:  OTLP/HTTP → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces (port 443)
+# Traces:  OTLP/HTTP → https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces (port 443)
 # Emits:   one trace/second — "database" SERVER span (parent) + "user" CLIENT span (child)
 # Service: demo-python-service
 #
@@ -79,7 +79,7 @@ spec:
         # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT sets the exact URL for traces; the SDK
         # does not append /v1/traces when this signal-specific variable is used.
         - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-          value: "https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces"
+          value: "https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces"
         - name: OTEL_EXPORTER_OTLP_PROTOCOL
           value: "http/protobuf"
         - name: OTEL_EXPORTER_OTLP_HEADERS

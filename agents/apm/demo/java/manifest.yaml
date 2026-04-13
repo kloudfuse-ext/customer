@@ -1,13 +1,13 @@
 ---
 # Java APM Demo
-# Image:     eclipse-temurin:21-jdk-alpine (Docker Hub) — writes + compiles + runs a trace loop inline.
-# Agent:     OpenTelemetry Java agent downloaded by init container (busybox + wget).
-# Traces:    OTLP/HTTP → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces (port 443)
-# Emits:     one trace/second — "database" SERVER span (parent) + "user" CLIENT span (child)
-# Service:   demo-java-service
+# Image:   maven:3.9-eclipse-temurin-21 (Docker Hub) — Maven manages OTel SDK dependencies.
+# SDK:     OpenTelemetry Java SDK (direct, no javaagent) — initialized via AutoConfiguredOpenTelemetrySdk.
+# Traces:  OTLP/HTTP → https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces (port 443)
+# Emits:   one trace/second — "database" SERVER span (parent) + "user" CLIENT span (child)
+# Service: demo-java-service
 #
-# NOTE: first startup takes ~60 s while the init container downloads the javaagent (~15 MB)
-#       and the main container compiles DemoServer.java.
+# NOTE: first startup takes ~2–3 min while Maven downloads OTel SDK jars (~30 MB total).
+#       Subsequent restarts reuse the Maven local repo in /maven-cache (emptyDir).
 apiVersion: v1
 kind: Pod
 metadata:
@@ -25,60 +25,95 @@ spec:
       effect: "NoSchedule"
 
   volumes:
-    - name: otel-agent
+    - name: maven-cache
       emptyDir: {}
-    - name: app-src
-      emptyDir: {}
-
-  # ---- download OTel javaagent + API compile-time jars into shared volume ----
-  initContainers:
-    - name: otel-agent-init
-      image: busybox
-      command:
-        - sh
-        - -c
-        - |
-          set -e
-          OTEL_API_VERSION=1.40.0
-          echo "Downloading OpenTelemetry Java agent..."
-          wget -q -O /agent/opentelemetry-javaagent.jar \
-            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
-          echo "Done: $(ls -lh /agent/opentelemetry-javaagent.jar)"
-
-          # The javaagent jar embeds API classes in a nested bootstrap jar — they are
-          # NOT accessible via -cp at compile time. Download the API jars separately
-          # for javac; the javaagent still provides the runtime implementation.
-          echo "Downloading opentelemetry-api ${OTEL_API_VERSION}..."
-          wget -q -O /agent/opentelemetry-api.jar \
-            "https://repo1.maven.org/maven2/io/opentelemetry/opentelemetry-api/${OTEL_API_VERSION}/opentelemetry-api-${OTEL_API_VERSION}.jar"
-          wget -q -O /agent/opentelemetry-context.jar \
-            "https://repo1.maven.org/maven2/io/opentelemetry/opentelemetry-context/${OTEL_API_VERSION}/opentelemetry-context-${OTEL_API_VERSION}.jar"
-          echo "API jars ready."
-      volumeMounts:
-        - name: otel-agent
-          mountPath: /agent
 
   containers:
     - name: java-app
-      image: eclipse-temurin:21-jdk-alpine
+      image: maven:3.9-eclipse-temurin-21
       command: ["/bin/sh", "-c"]
       args:
         - |
           set -e
-          mkdir -p /app && cd /app
+          mkdir -p /demo/src/main/java && cd /demo
+
+          # ---- write pom.xml ----
+          cat > pom.xml << 'POMEOF'
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                   http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>demo</groupId>
+            <artifactId>demo-java-service</artifactId>
+            <version>1.0</version>
+            <properties>
+              <maven.compiler.source>21</maven.compiler.source>
+              <maven.compiler.target>21</maven.compiler.target>
+              <otel.version>1.40.0</otel.version>
+            </properties>
+            <dependencies>
+              <!-- Autoconfigure reads all OTEL_* env vars to set up the SDK -->
+              <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+                <version>${otel.version}</version>
+              </dependency>
+              <!-- OTLP HTTP exporter (uses OkHttp sender by default) -->
+              <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-exporter-otlp</artifactId>
+                <version>${otel.version}</version>
+              </dependency>
+            </dependencies>
+            <build>
+              <plugins>
+                <!-- Build a fat jar so we can run with plain java -jar -->
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-assembly-plugin</artifactId>
+                  <version>3.6.0</version>
+                  <configuration>
+                    <archive>
+                      <manifest>
+                        <mainClass>DemoServer</mainClass>
+                      </manifest>
+                    </archive>
+                    <descriptorRefs>
+                      <descriptorRef>jar-with-dependencies</descriptorRef>
+                    </descriptorRefs>
+                  </configuration>
+                  <executions>
+                    <execution>
+                      <id>make-assembly</id>
+                      <phase>package</phase>
+                      <goals><goal>single</goal></goals>
+                    </execution>
+                  </executions>
+                </plugin>
+              </plugins>
+            </build>
+          </project>
+          POMEOF
 
           # ---- write trace loop application ----
-          cat > DemoServer.java << 'JAVACODE'
+          cat > src/main/java/DemoServer.java << 'JAVACODE'
           import io.opentelemetry.api.GlobalOpenTelemetry;
           import io.opentelemetry.api.trace.Span;
           import io.opentelemetry.api.trace.SpanKind;
           import io.opentelemetry.api.trace.Tracer;
           import io.opentelemetry.context.Scope;
+          import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk;
 
           public class DemoServer {
               public static void main(String[] args) throws Exception {
-                  // The javaagent initializes GlobalOpenTelemetry at JVM startup.
-                  // getTracer() is safe to call after the agent has started.
+                  // Initialize SDK from OTEL_* env vars and register as global.
+                  // Reads: OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+                  //        OTEL_EXPORTER_OTLP_HEADERS, OTEL_EXPORTER_OTLP_PROTOCOL, etc.
+                  AutoConfiguredOpenTelemetrySdk.builder()
+                          .setResultAsGlobal()
+                          .build();
+
                   Tracer tracer = GlobalOpenTelemetry.getTracer("demo-java-service");
                   System.out.println("demo-java-service starting trace loop (1 trace/second)");
 
@@ -100,27 +135,23 @@ spec:
                       } finally {
                           serverSpan.end();
                       }
-
                       Thread.sleep(950);
                   }
               }
           }
           JAVACODE
 
-          # ---- compile against the API jars (api + context needed for Scope) ----
-          javac -cp /agent/opentelemetry-api.jar:/agent/opentelemetry-context.jar DemoServer.java
-          exec java \
-            -javaagent:/agent/opentelemetry-javaagent.jar \
-            -cp /app \
-            DemoServer
+          # ---- compile, package fat jar, and run ----
+          mvn -q -Dmaven.repo.local=/maven-cache package
+          exec java -jar target/demo-java-service-1.0-jar-with-dependencies.jar
       env:
-        # OTel javaagent picks up all OTEL_* env vars automatically.
+        # AutoConfiguredOpenTelemetrySdk reads all OTEL_* env vars automatically.
         - name: OTEL_SERVICE_NAME
           value: "demo-java-service"
-        # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT sets the exact URL for traces; the agent
+        # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT sets the exact URL for traces; the SDK
         # does not append /v1/traces when this signal-specific variable is used.
         - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-          value: "https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces"
+          value: "https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces"
         - name: OTEL_EXPORTER_OTLP_PROTOCOL
           value: "http/protobuf"
         - name: OTEL_EXPORTER_OTLP_COMPRESSION
@@ -136,17 +167,13 @@ spec:
           value: "1.0"
         - name: OTEL_RESOURCE_ATTRIBUTES
           value: "deployment.environment.name=dev,service.namespace=apm-demo"
-        - name: OTEL_JAVAAGENT_LOGGING
-          value: "application"
       volumeMounts:
-        - name: otel-agent
-          mountPath: /agent
-        - name: app-src
-          mountPath: /app
+        - name: maven-cache
+          mountPath: /maven-cache
       resources:
         requests:
           cpu: "200m"
-          memory: "256Mi"
+          memory: "512Mi"
         limits:
           cpu: "1000m"
-          memory: "512Mi"
+          memory: "1Gi"
