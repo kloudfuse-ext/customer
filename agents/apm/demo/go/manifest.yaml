@@ -1,0 +1,148 @@
+---
+# Go APM Demo
+# Image:   golang:1.23-alpine (Docker Hub) — writes + runs a minimal OTel trace loop inline.
+# Traces:  OTLP/HTTP → https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces (port 443)
+# Service: demo-go-service
+# Emits:   one trace/second — "database" SERVER span (parent) + "user" CLIENT span (child)
+#
+# NOTE: first startup takes ~90 s while `go run` downloads modules and compiles.
+#       Subsequent restarts reuse the module cache in /go/pkg/mod (emptyDir lives until pod is deleted).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apm-demo-go
+  labels:
+    app: apm-demo-go
+    language: go
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: gopath-cache
+      emptyDir: {}
+
+  containers:
+    - name: go-app
+      image: golang:1.23-alpine
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+          mkdir -p /demo && cd /demo
+
+          # ---- write go.mod ----
+          cat > go.mod << 'GOMOD'
+          module demo-go-service
+
+          go 1.23
+
+          require (
+            go.opentelemetry.io/otel v1.28.0
+            go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.28.0
+            go.opentelemetry.io/otel/sdk v1.28.0
+          )
+          GOMOD
+
+          # ---- write main.go ----
+          cat > main.go << 'GOCODE'
+          package main
+
+          import (
+            "context"
+            "log"
+            "time"
+
+            "go.opentelemetry.io/otel"
+            "go.opentelemetry.io/otel/attribute"
+            "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+            "go.opentelemetry.io/otel/sdk/resource"
+            sdktrace "go.opentelemetry.io/otel/sdk/trace"
+            "go.opentelemetry.io/otel/trace"
+          )
+
+          func initTracer(ctx context.Context) (*sdktrace.TracerProvider, error) {
+            // All config (endpoint, headers, protocol) is read from env vars automatically.
+            exporter, err := otlptracehttp.New(ctx)
+            if err != nil {
+              return nil, err
+            }
+            res := resource.NewWithAttributes(
+              "https://opentelemetry.io/schemas/1.21.0",
+              attribute.String("service.name", "demo-go-service"),
+              attribute.String("deployment.environment.name", "dev"),
+              attribute.String("service.namespace", "apm-demo"),
+            )
+            tp := sdktrace.NewTracerProvider(
+              sdktrace.WithBatcher(exporter),
+              sdktrace.WithResource(res),
+            )
+            otel.SetTracerProvider(tp)
+            return tp, nil
+          }
+
+          func main() {
+            ctx := context.Background()
+            tp, err := initTracer(ctx)
+            if err != nil {
+              log.Fatalf("failed to init tracer: %v", err)
+            }
+            defer tp.Shutdown(ctx)
+
+            tracer := otel.Tracer("demo-go-service")
+            log.Println("demo-go-service starting trace loop (1 trace/second)")
+
+            for {
+              // "database" SERVER span is the root of the trace.
+              traceCtx, serverSpan := tracer.Start(ctx, "database",
+                trace.WithSpanKind(trace.SpanKindServer))
+
+              // "user" CLIENT span is a child — shares the same trace ID.
+              _, clientSpan := tracer.Start(traceCtx, "user",
+                trace.WithSpanKind(trace.SpanKindClient))
+
+              time.Sleep(50 * time.Millisecond)
+              clientSpan.End()
+              serverSpan.End()
+
+              time.Sleep(950 * time.Millisecond)
+            }
+          }
+          GOCODE
+
+          # ---- download dependencies and run ----
+          go mod tidy
+          go run main.go
+      env:
+        # Full traces URL — OTEL_EXPORTER_OTLP_TRACES_ENDPOINT overrides the base endpoint
+        # for traces only and is used verbatim (no /v1/traces suffix appended).
+        - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          value: "https://steve-dev-gcp.kloudfuse.io/ingester/otlp/traces"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        # API key injected as a request header — value pulled from the kloudfuse-api-key Secret.
+        # Create the Secret once: kubectl create secret generic kloudfuse-api-key \
+        #   --from-literal=value="kf-api-key=<your-api-key>"
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          valueFrom:
+            secretKeyRef:
+              name: kloudfuse-api-key
+              key: value
+        - name: GOPATH
+          value: "/go"
+        - name: GOPROXY
+          value: "https://proxy.golang.org,direct"
+      volumeMounts:
+        - name: gopath-cache
+          mountPath: /go/pkg/mod
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "256Mi"
+        limits:
+          cpu: "1000m"
+          memory: "512Mi"
