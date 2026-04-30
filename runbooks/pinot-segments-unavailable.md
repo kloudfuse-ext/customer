@@ -9,7 +9,7 @@ When Apache Pinot segments are reported as unavailable, queries against those ta
 **Common Root Causes:**
 - Pinot server pod is down or crash-looping
 - Server restarted and segments have not finished reloading from deep store
-- Deep store (S3/GCS/Azure Blob) connectivity issues preventing segment download
+- Deep store (S3/GCS/Azure Blob) connectivity or permissions issues preventing segment download
 - Segment corruption in deep store or on the server
 - ZooKeeper state mismatch — controller believes a segment is assigned to a server that can't serve it
 
