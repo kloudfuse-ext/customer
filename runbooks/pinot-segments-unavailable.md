@@ -225,10 +225,11 @@ kubectl exec -n kfuse $CONTROLLER_POD -- \
 import sys, json
 data = json.load(sys.stdin)
 servers = {}
-for seg, assignments in data.get('OFFLINE', {}).items():
-    for server, state in assignments.items():
-        if state != 'ONLINE':
-            servers.setdefault(server, []).append((seg, state))
+for table_type in ('OFFLINE', 'REALTIME'):
+    for seg, assignments in data.get(table_type, {}).items():
+        for server, state in assignments.items():
+            if state != 'ONLINE':
+                servers.setdefault(server, []).append((seg, state))
 for server, issues in servers.items():
     print(f'{server}: {len(issues)} segments not ONLINE')
 "
