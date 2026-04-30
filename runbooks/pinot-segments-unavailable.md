@@ -191,9 +191,9 @@ If you see a steady stream of `Loaded segment` messages, the server is still rec
 **Resolution:** Wait for segments to finish loading. Monitor with:
 
 ```bash
-watch -n 30 'kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/<TABLE_NAME>/segments" | \
-  python3 -c "import sys,json; data=json.load(sys.stdin); print(data)"'
+watch -n 30 "kubectl exec -n kfuse $CONTROLLER_POD -- \
+  curl -s \"http://localhost:9000/tables/<TABLE_NAME>/segments\" | \
+  python3 -c \"import sys,json; data=json.load(sys.stdin); print(data)\""
 ```
 
 ### Case B: Deep Store Connectivity Issue
