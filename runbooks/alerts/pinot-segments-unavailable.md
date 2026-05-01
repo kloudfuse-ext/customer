@@ -1,5 +1,21 @@
 # Pinot Segments Unavailable
 
+## Table of Contents
+
+- [Summary](#summary)
+- [Symptoms](#symptoms)
+- [Step 1: Verify Pod Health](#step-1-verify-pod-health)
+- [Step 2: Check Pinot Server Logs](#step-2-check-pinot-server-logs)
+- [Step 3: Identify Affected Tables and Segments](#step-3-identify-affected-tables-and-segments)
+- [Step 4: Diagnose Root Cause](#step-4-diagnose-root-cause)
+- [Step 5: Reload Segments](#step-5-reload-segments)
+- [Step 6: Reset REALTIME Segment Consumption](#step-6-reset-realtime-segment-consumption-if-kafka-data-is-available)
+- [Step 7: Post-Recovery Verification](#step-7-post-recovery-verification)
+- [Prevention](#prevention)
+- [Related Runbooks](#related-runbooks)
+
+---
+
 ## Summary
 
 When Apache Pinot segments are reported as unavailable, queries against those tables will return partial results or fail with "No server found for segment" errors. This runbook provides steps to identify the root cause and restore segment availability.
@@ -7,11 +23,18 @@ When Apache Pinot segments are reported as unavailable, queries against those ta
 **Impact:** Queries against affected tables return incomplete or no data. Real-time ingestion may also be impacted if consuming segments are affected.
 
 **Common Root Causes:**
-- Pinot server pod is down or crash-looping
-- Server restarted and segments have not finished reloading from deep store
+
+This alert fires when `pinot_controller_percentSegmentsAvailable_Value < 90` averaged over 10 minutes. This metric drops below 100% in several scenarios — not all of which require immediate intervention:
+
+- Segments in ERROR state (hard failure — requires action)
+- Segments still loading/downloading after a server restart (transient — will self-resolve)
+- Segments being relocated between servers (transient — will self-resolve)
+- REALTIME segments temporarily catching up on consumption (transient — will self-resolve)
 - Deep store (S3/GCS/Azure Blob) connectivity or permissions issues preventing segment download
 - Segment corruption in deep store or on the server
 - ZooKeeper state mismatch — controller believes a segment is assigned to a server that can't serve it
+
+**Note:** If segments are in hard ERROR state, the [Pinot Segments in Error State](pinot-segments-in-error-state.md) alert will also fire with more specific details.
 
 **Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
 
@@ -35,21 +58,36 @@ QueryException: Encountered errors when executing the query...
 
 | Metric | Healthy Value | Unhealthy Value |
 |--------|--------------|-----------------|
-| `pinot_controller_numSegmentsWithError` | `0` | `> 0` |
-| `pinot_server_numSegmentsWithErrors` | `0` | `> 0` |
-| `pinot_broker_numUnavailableSegments` | `0` | `> 0` |
+| `pinot_controller_percentSegmentsAvailable_Value` | `100` | `< 90` |
+| `pinot_controller_segmentsInErrorState_Value` | `0` | `> 0` |
+| `pinot_controller_validation_missingSegmentCount_Value` | `0` | `> 0` |
 
 ### Alert Expression
 
 ```promql
-pinot_controller_numSegmentsWithError{org_id="<ORG_ID>"} > 0
+avg by (org_id, kube_cluster_name, kf_node, table) (
+  avg_over_time(
+    pinot_controller_percentSegmentsAvailable_Value{
+      kfuse="true",
+      kube_service="pinot-controller",
+      table=~"kf_logs|kf_metrics|kf_metrics_rollup"
+    }[10m]
+  ) < 100
+)
+unless on (org_id, kube_cluster_name, kf_node)
+(
+  sum by (org_id, kube_cluster_name, kf_node) (
+    kubernetes_state_node_by_condition{
+      kfuse="true",
+      condition="Ready",
+      status=~"false|unknown",
+      kf_node=~".+"
+    }
+  ) > 0
+)
 ```
 
-Or for broker-reported unavailable segments:
-
-```promql
-pinot_broker_numUnavailableSegments{org_id="<ORG_ID>"} > 0
-```
+**Note:** The alert is suppressed when the Pinot controller node itself is not Ready — in that case the [Node condition not Ready](node_status.md) alert will fire instead.
 
 ---
 
@@ -82,65 +120,7 @@ If any pod is **not** Running or shows restarts, address pod health first:
 
 ---
 
-## Step 2: Identify Affected Tables and Segments
-
-Use the Pinot Controller REST API to find which segments are in an error state.
-
-### Get Controller Pod Name
-
-```bash
-CONTROLLER_POD=$(kubectl get pods -n kfuse -l app=pinot-controller -o jsonpath='{.items[0].metadata.name}')
-echo "Controller pod: $CONTROLLER_POD"
-```
-
-### List All Tables
-
-```bash
-kubectl exec -n kfuse $CONTROLLER_POD -- curl -s http://localhost:9000/tables | python3 -m json.tool
-```
-
-### Check Segment Metadata for a Specific Table
-
-Replace `<TABLE_NAME>` with the table name (e.g., `logs_REALTIME` or `traces_OFFLINE`):
-
-```bash
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/${TABLE_NAME}/segments" | python3 -m json.tool
-```
-
-### Find Segments in ERROR State
-
-```bash
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/${TABLE_NAME}/segments?includeReplacedSegments=false" \
-  | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for entry in data:
-    for seg, state in entry.get('segmentStatus', {}).items():
-        if state != 'ONLINE':
-            print(f'{state}: {seg}')
-"
-```
-
-### Check Segment Assignment (Which Server Hosts Each Segment)
-
-```bash
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/${TABLE_NAME}/externalview" | python3 -m json.tool
-```
-
-Look for segments where state is `ERROR` or `OFFLINE` instead of `ONLINE`.
-
----
-
-## Step 3: Check Pinot Server Logs
+## Step 2: Check Pinot Server Logs
 
 Identify which server is reporting errors by searching Pinot server logs in Kloudfuse.
 
@@ -172,7 +152,29 @@ Common error patterns to look for:
 
 ---
 
+## Step 3: Identify Affected Tables and Segments
+
+Use the [segments-error.sh](../../scripts/alerts/segments-error.sh) script to list all tables with non-ONLINE segments, or check a specific table:
+
+```bash
+# Scan all tables for non-ONLINE segments
+./segments-error.sh status
+
+# Check a specific table
+./segments-error.sh status kf_logs_REALTIME
+```
+
+---
+
 ## Step 4: Diagnose Root Cause
+
+Use the script to show segment states and server assignments side-by-side:
+
+```bash
+./segments-error.sh diagnose <TABLE_NAME>
+```
+
+Review the output to identify which servers have non-ONLINE segments, then match to one of the cases below.
 
 ### Case A: Server Was Recently Restarted (Segments Still Loading)
 
@@ -191,6 +193,8 @@ If you see a steady stream of `Loaded segment` messages, the server is still rec
 **Resolution:** Wait for segments to finish loading. Monitor with:
 
 ```bash
+CONTROLLER_POD=$(kubectl get pods -n kfuse -l app=pinot-controller -o jsonpath='{.items[0].metadata.name}')
+
 watch -n 30 "kubectl exec -n kfuse $CONTROLLER_POD -- \
   curl -s \"http://localhost:9000/tables/<TABLE_NAME>/segments\" | \
   python3 -c \"import sys,json; data=json.load(sys.stdin); print(data)\""
@@ -219,6 +223,8 @@ If only one server is reporting errors and others are healthy, the replication f
 Check which server has the problem:
 
 ```bash
+CONTROLLER_POD=$(kubectl get pods -n kfuse -l app=pinot-controller -o jsonpath='{.items[0].metadata.name}')
+
 kubectl exec -n kfuse $CONTROLLER_POD -- \
   curl -s "http://localhost:9000/tables/<TABLE_NAME>/externalview" \
   | python3 -c "
@@ -254,6 +260,9 @@ Check if the segment exists in deep store (the path depends on your deep store c
 ```bash
 # For S3 deep store — replace bucket/path with your configuration
 aws s3 ls s3://<BUCKET>/pinot/<TABLE_NAME>/<SEGMENT_NAME>/
+
+# For GCS deep store — replace bucket/path with your configuration
+gsutil ls gs://<BUCKET>/pinot/<TABLE_NAME>/<SEGMENT_NAME>/
 ```
 
 If the segment is confirmed missing or corrupted:
@@ -265,36 +274,14 @@ If the segment is confirmed missing or corrupted:
 
 ## Step 5: Reload Segments
 
-If segments are in ERROR state and the underlying cause (connectivity, server health) is resolved, trigger a reload.
-
-### Reload a Single Segment
+If segments are in ERROR state and the underlying cause (connectivity, server health) is resolved, trigger a reload. The script will automatically re-check segment states after the reload:
 
 ```bash
-TABLE_NAME="<TABLE_NAME>"
-SEGMENT_NAME="<SEGMENT_NAME>"
+# Reload all segments for a table
+./segments-error.sh reload <TABLE_NAME>
 
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s -X POST "http://localhost:9000/tables/${TABLE_NAME}/segments/${SEGMENT_NAME}/reload" \
-  | python3 -m json.tool
-```
-
-### Reload All Segments for a Table
-
-```bash
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s -X POST "http://localhost:9000/tables/${TABLE_NAME}/segments/reload" \
-  | python3 -m json.tool
-```
-
-After triggering a reload, monitor the segment states until all return to `ONLINE`:
-
-```bash
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/${TABLE_NAME}/segments" | python3 -m json.tool
+# Reload a single segment
+./segments-error.sh reload <TABLE_NAME> <SEGMENT_NAME>
 ```
 
 ---
@@ -305,98 +292,33 @@ If a REALTIME segment is stuck in ERROR and Kafka still has the data, reset the 
 
 > **Warning:** Only use this for REALTIME tables. Resetting a consuming segment that has already been committed may cause data duplication or loss if done incorrectly. Confirm with your team before proceeding.
 
-### Find Consuming Segments in ERROR
+First use `status` to identify which segments are in ERROR, then use `reset`:
 
 ```bash
-TABLE_NAME="<TABLE_NAME>_REALTIME"
+./segments-error.sh status <TABLE_NAME>_REALTIME
 
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/${TABLE_NAME}/segments" \
-  | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for entry in data:
-    for seg, state in entry.get('segmentStatus', {}).items():
-        if state == 'ERROR':
-            print(seg)
-"
+./segments-error.sh reset <TABLE_NAME>_REALTIME <SEGMENT_NAME>
 ```
 
-### Reset the Segment
+The script will prompt for confirmation before resetting. After reset, monitor consumption resuming in Kloudfuse:
 
-```bash
-TABLE_NAME="<TABLE_NAME>_REALTIME"
-SEGMENT_NAME="<SEGMENT_NAME>"
+**Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s -X POST "http://localhost:9000/segments/${TABLE_NAME}/${SEGMENT_NAME}/reset" \
-  | python3 -m json.tool
 ```
-
-Monitor the Pinot server logs after reset to confirm the segment resumes consumption:
-
-```bash
-kubectl logs -n kfuse <SERVER_POD> -f | grep -E "${SEGMENT_NAME}|Consuming|CONSUMING"
+kube_pod*~"pinot-server" and "<SEGMENT_NAME>"
 ```
 
 ---
 
 ## Step 7: Post-Recovery Verification
 
-### Verify All Segments Are ONLINE
+Run the verify command to check segment health, run a broker query test, and print the PromQL queries to confirm in Kloudfuse Metrics:
 
 ```bash
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $CONTROLLER_POD -- \
-  curl -s "http://localhost:9000/tables/${TABLE_NAME}/segments" \
-  | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-total, online, other = 0, 0, []
-for entry in data:
-    for seg, state in entry.get('segmentStatus', {}).items():
-        total += 1
-        if state == 'ONLINE':
-            online += 1
-        else:
-            other.append((seg, state))
-print(f'Total: {total}, ONLINE: {online}, Other: {len(other)}')
-for seg, state in other:
-    print(f'  {state}: {seg}')
-"
+./segments-error.sh verify <TABLE_NAME>
 ```
 
-### Verify Metrics Are Healthy
-
-Replace the placeholder values with your actual values:
-- `<ORG_ID>`: Your organization ID
-- `<KUBE_CLUSTER_NAME>`: Your Kubernetes cluster name
-
-```promql
-# Should be 0
-pinot_controller_numSegmentsWithError{org_id="<ORG_ID>", kube_cluster_name="<KUBE_CLUSTER_NAME>"}
-
-# Should be 0
-pinot_broker_numUnavailableSegments{org_id="<ORG_ID>", kube_cluster_name="<KUBE_CLUSTER_NAME>"}
-```
-
-### Verify Query Returns Data
-
-Run a test query against the affected table through the Pinot broker:
-
-```bash
-BROKER_POD=$(kubectl get pods -n kfuse -l app=pinot-broker -o jsonpath='{.items[0].metadata.name}')
-TABLE_NAME="<TABLE_NAME>"
-
-kubectl exec -n kfuse $BROKER_POD -- \
-  curl -s -X POST "http://localhost:8099/query/sql" \
-  -H "Content-Type: application/json" \
-  -d "{\"sql\": \"SELECT COUNT(*) FROM ${TABLE_NAME} LIMIT 1\"}" \
-  | python3 -m json.tool
-```
-
-A healthy response will include `"numServersQueried"` matching `"numServersResponded"` with no exceptions.
+A healthy result shows all segments `ONLINE`, `numServersQueried` matching `numServersResponded` with no exceptions, and the PromQL expressions returning `0`.
 
 ---
 
@@ -418,29 +340,19 @@ increase(kube_pod_container_status_restarts_total{namespace="kfuse", pod=~"pinot
 
 ### Ensure Adequate Server Resources
 
-Segment load failures from OOM are prevented by tuning server heap size in values.yaml:
+Segment load failures from OOM are prevented by tuning the server heap size. Use `jvmMemory` in `values.yaml` — specify an integer followed by `G`:
 
 ```yaml
-pinot:
-  server:
-    jvmOpts: "-Xms4G -Xmx8G"
-```
-
-### Replication Factor
-
-Ensure tables have a replication factor of at least 2 (ideally 3) so that a single server failure does not make segments unavailable:
-
-```json
-{
-  "tableName": "<TABLE_NAME>",
-  "replication": "3"
-}
+server:
+  jvmMemory: 8G
 ```
 
 ---
 
 ## Related Runbooks
 
+- [Pinot Segments in Error State](pinot-segments-in-error-state.md) — Hard segment ERROR failures requiring intervention
+- [Node condition not Ready](node_status.md) — Node-level failures that may suppress this alert
 - [Pinot ZooKeeper Corruption Recovery](pinot-zookeeper-corruption-recovery.md) — ZooKeeper quorum loss affecting Pinot state
 - [CrashLoopBackOff Alert](crashloopbackupoff_alert.md) — Pod crash-looping
 - [Pod Failed Alert](pod_failed_alert.md) — Pod in Failed state
