@@ -28,7 +28,7 @@ The Kloudfuse observability agent (`kfuse-agent`) is responsible for collecting 
 - DaemonSet update rolled out a broken image
 - Node was added to the cluster but the DaemonSet pod failed to schedule
 
-**Note:** This alert only fires for nodes that are confirmed Ready (`kubernetes_state_node_by_condition{condition="Ready", status="true"}`). If the node itself is unhealthy, the [Node condition not Ready](node_status.md) alert will fire instead — address that first.
+**Note:** This alert fires when the `kfuse-observability-agent` DaemonSet has fewer ready pods than desired — meaning one or more nodes are missing a running agent. It does not identify the specific node; use the steps below to locate the affected pod(s).
 
 **Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
 
@@ -39,29 +39,37 @@ The Kloudfuse observability agent (`kfuse-agent`) is responsible for collecting 
 ### Alert Expression
 
 ```promql
-sum by (org_id, kube_cluster_name, kf_node)(
-  datadog_agent_running{kfuse="true", kf_node!=""}
-)
-and on (org_id, kube_cluster_name, kf_node)
 (
-  sum by (org_id, kube_cluster_name, kf_node)(
-    kubernetes_state_node_by_condition{
-      kfuse="true",
-      condition="Ready",
-      status="true",
-      kf_node!=""
-    }
-  )
-)
+  kubernetes_state_daemonset_desired{
+    kfuse="true",
+    kube_daemon_set="kfuse-observability-agent"
+  }
+  -
+  kubernetes_state_daemonset_ready{
+    kfuse="true",
+    kube_daemon_set="kfuse-observability-agent"
+  }
+) > 0
 ```
 
-The alert fires when `datadog_agent_running` drops below 1 on a node that is confirmed Ready — meaning the agent has stopped reporting but the node itself is healthy.
+The alert fires when the number of ready pods in the `kfuse-observability-agent` DaemonSet is less than the desired count — meaning one or more nodes in the cluster do not have a running agent pod.
 
 ### Metrics Indicating Issue
 
 | Metric | Healthy Value | Unhealthy Value |
 |--------|--------------|-----------------|
-| `datadog_agent_running` | `1` per host | `0` or absent |
+| `kubernetes_state_daemonset_desired` | Equal to node count | — |
+| `kubernetes_state_daemonset_ready` | Equal to desired | Less than desired |
+
+**What `kubernetes_state_daemonset_ready` means:** This metric counts pods that are both running and passing their readiness probe. It maps to the Kubernetes DaemonSet status field `numberReady`. A pod must satisfy all three conditions to count as ready:
+
+1. **Scheduled** — the pod has been assigned to a node
+2. **Running** — the container has started
+3. **Ready** — the readiness probe is passing, indicating the pod is healthy
+
+A pod in `CrashLoopBackOff`, `Pending`, `OOMKilled`, or failing its readiness probe will not count toward `ready`. This means `desired - ready > 0` catches all meaningful failure modes: evicted pods, crash-looping pods, pods stuck in Pending due to resource or taint issues, and pods failing readiness.
+
+**Note:** This alert does not detect a pod that is running and passing its readiness probe but whose agent process has silently stopped reporting metrics. If you suspect silent failure, check `datadog_agent_running` directly for the affected nodes.
 
 ---
 
