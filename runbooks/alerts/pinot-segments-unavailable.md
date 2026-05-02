@@ -129,13 +129,13 @@ Identify which server is reporting errors by searching Pinot server logs in Klou
 Set the time range to cover when the alert fired, then run the following FuseQL query:
 
 ```
-kube_pod*~"pinot-server" and (__kf_level="ERROR" or __kf_level="WARN")
+kube_service="pinot-server" and level=~"warn|error" 
 ```
 
 To narrow down to segment-specific failures:
 
 ```
-kube_pod*~"pinot-server" and ("Failed to load" or "Failed to download" or "Cannot find" or "unavailable" or "segment")
+kube_service="pinot-server" and ("Failed to load" or "Failed to download" or "Cannot find" or "unavailable")
 ```
 
 Review the results grouped by `kube_pod` to identify which server instance is generating the errors.
