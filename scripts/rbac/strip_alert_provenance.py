@@ -93,9 +93,23 @@ def parse_args():
         action="store_true",
         help="Show what would be changed without making PUT calls",
     )
+    parser.add_argument(
+        "--include-non-kloudfuse",
+        action="store_true",
+        help=(
+            "Also process alerts that don't look Kloudfuse-originated "
+            "(no ruleType annotation, or non-3/4 data length). "
+            "Requires --folder; not allowed globally."
+        ),
+    )
     args = parser.parse_args()
     if args.group and not args.folder:
         parser.error("--group requires --folder")
+    if args.include_non_kloudfuse and not args.folder:
+        parser.error(
+            "--include-non-kloudfuse requires --folder "
+            "(this flag is not allowed globally)"
+        )
     return args
 
 
@@ -135,8 +149,10 @@ def fetch_all_rules(session, base_url, summary):
     return resp.json()
 
 
-def rule_matches_filter(rule):
+def rule_matches_filter(rule, include_non_kloudfuse=False):
     """Check if a rule has 'ruleType' in annotations and data length 3 or 4."""
+    if include_non_kloudfuse:
+        return True
     annotations = rule.get("annotations", {}) or {}
     grafana_alert = rule.get("grafana_alert", {}) or {}
     data = grafana_alert.get("data", []) or []
@@ -272,6 +288,8 @@ def main():
         print(f"Filter folder: {args.folder}")
     if args.group:
         print(f"Filter group:  {args.group}")
+    if args.include_non_kloudfuse:
+        print("Filter:        INCLUDING non-Kloudfuse alerts")
     if args.dry_run:
         print("Mode:         DRY RUN (no changes will be made)")
     print()
@@ -302,7 +320,7 @@ def main():
             # Find matching alerts in this group
             matching_titles = []
             for rule in rules:
-                if rule_matches_filter(rule):
+                if rule_matches_filter(rule, args.include_non_kloudfuse):
                     ga = rule.get("grafana_alert", {}) or {}
                     matching_titles.append(ga.get("title", "(untitled)"))
 
