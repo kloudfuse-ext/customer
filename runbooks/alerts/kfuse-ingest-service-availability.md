@@ -115,7 +115,53 @@ sum by (org_id, kube_cluster_name, kube_namespace, kube_deployment)(
       kube_deployment=~"logs-transformer|metrics-transformer|trace-transformer"
     }
   )
-) >= 3
+) >= (3 + (
+  sum by (org_id, kube_cluster_name, kube_namespace, kube_deployment)(
+    kubernetes_state_deployment_replicas_desired{
+      kube_app_instance="kfuse",
+      kube_deployment=~"logs-transformer|metrics-transformer|trace-transformer"
+    }
+  ) >=bool 11
+))
+```
+
+**StatefulSet — non-scalable (1+ unavailable):**
+```promql
+sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
+  kubernetes_state_statefulset_replicas_desired{
+    kube_app_instance="kfuse",
+    kube_stateful_set=~"kfuse-redis|kfuse-profiler-server|orchestrator-postgresql"
+  }
+) - sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
+  kubernetes_state_statefulset_replicas_ready{
+    kube_app_instance="kfuse",
+    kube_stateful_set=~"kfuse-redis|kfuse-profiler-server|orchestrator-postgresql"
+  }
+) > 0
+```
+
+**Scalable statefulset (3+ unavailable):**
+```promql
+(
+  sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
+    kubernetes_state_statefulset_replicas_desired{
+      kube_app_instance="kfuse",
+      kube_stateful_set=~"ingester|kafka-kraft-broker|kafka-kraft-controller|logs-parser"
+    }
+  ) - sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
+    kubernetes_state_statefulset_replicas_ready{
+      kube_app_instance="kfuse",
+      kube_stateful_set=~"ingester|kafka-kraft-broker|kafka-kraft-controller|logs-parser"
+    }
+  )
+) >= (3 + (
+  sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
+    kubernetes_state_statefulset_replicas_desired{
+      kube_app_instance="kfuse",
+      kube_stateful_set=~"ingester|kafka-kraft-broker|kafka-kraft-controller|logs-parser"
+    }
+  ) >=bool 11
+))
 ```
 
 ### Metrics Indicating Issue

@@ -86,7 +86,14 @@ Fires when **3 or more** replicas are unavailable (or **4+** if desired >= 11) f
       kube_deployment=~"query-service|trace-query-service|events-query-service|rum-query-service"
     }
   )
-) >= 3
+) >= (3 + (
+  sum by (org_id, kube_cluster_name, kube_namespace, kube_deployment)(
+    kubernetes_state_deployment_replicas_desired{
+      kube_app_instance="kfuse",
+      kube_deployment=~"query-service|trace-query-service|events-query-service|rum-query-service"
+    }
+  ) >=bool 11
+))
 ```
 
 **Scalable statefulset (3+ unavailable):**
@@ -95,15 +102,22 @@ Fires when **3 or more** replicas are unavailable (or **4+** if desired >= 11) f
   sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
     kubernetes_state_statefulset_replicas_desired{
       kube_app_instance="kfuse",
-      kube_service="<PINOT-SERVICE>"
+      kube_stateful_set=~"logs-query-service|pinot-controller|pinot-broker|pinot-server-realtime|pinot-server-offline|pinot-minion"
     }
   ) - sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
     kubernetes_state_statefulset_replicas_ready{
       kube_app_instance="kfuse",
-      kube_service="<PINOT-SERVICE>"
+      kube_stateful_set=~"logs-query-service|pinot-controller|pinot-broker|pinot-server-realtime|pinot-server-offline|pinot-minion"
     }
   )
-) >= 3
+) >= (3 + (
+  sum by (org_id, kube_cluster_name, kube_namespace, kube_stateful_set)(
+    kubernetes_state_statefulset_replicas_desired{
+      kube_app_instance="kfuse",
+      kube_stateful_set=~"logs-query-service|pinot-controller|pinot-broker|pinot-server-realtime|pinot-server-offline|pinot-minion"
+    }
+  ) >=bool 11
+))
 ```
 
 ### Metrics Indicating Issue

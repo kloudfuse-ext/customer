@@ -59,7 +59,7 @@ and on (org_id, kube_cluster_name, stream, class)
 (
   sum by (org_id, kube_cluster_name, stream, class)(
     rate(ingester_rate_control_num_events_allowed_count{kfuse="true", class!="kfuse_cp_class"}[5m])
-  ) > 100
+  ) > 5000
 )
 ```
 

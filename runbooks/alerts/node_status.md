@@ -46,7 +46,7 @@ You can refer to the [official documentation](https://kubernetes.io/docs/referen
         kfuse="true",
         condition="Ready",
         status=~"false|unknown",
-        kf_node=~".+"
+        kf_node!=""
       }
     )
   )
@@ -57,7 +57,16 @@ You can refer to the [official documentation](https://kubernetes.io/docs/referen
         kfuse="true",
         condition=~"MemoryPressure|DiskPressure|PIDPressure|NetworkUnavailable",
         status="true",
-        kf_node=~".+"
+        kf_node!=""
+      }
+    )
+  )
+  or
+  (
+    sum by (org_id, kube_cluster_name, node, status)(
+      kubernetes_state_node_status{
+        kfuse="true",
+        status="unschedulable"
       }
     )
   )
@@ -72,6 +81,7 @@ You can refer to the [official documentation](https://kubernetes.io/docs/referen
 | `kubernetes_state_node_by_condition{condition="MemoryPressure"}` | `status="false"` | `status="true"` |
 | `kubernetes_state_node_by_condition{condition="PIDPressure"}` | `status="false"` | `status="true"` |
 | `kubernetes_state_node_by_condition{condition="NetworkUnavailable"}` | `status="false"` | `status="true"` |
+| `kubernetes_state_node_status{status="unschedulable"}` | `0` | `> 0` (node cordoned) |
 
 ---
 

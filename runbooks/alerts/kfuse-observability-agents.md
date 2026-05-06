@@ -39,7 +39,7 @@ The Kloudfuse observability agent (`kfuse-agent`) is responsible for collecting 
 ### Alert Expression
 
 ```promql
-(
+sum by (org_id, kube_cluster_name, kube_daemon_set)(
   kubernetes_state_daemonset_desired{
     kfuse="true",
     kube_daemon_set="kfuse-observability-agent"
