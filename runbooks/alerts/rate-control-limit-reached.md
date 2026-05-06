@@ -31,6 +31,14 @@ Kloudfuse Rate Control enforces per-stream, per-class ingestion limits to protec
 
 **Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
 
+**External Documentation:**
+- [Rate Control Overview](https://docs.kloudfuse.com/platform/latest/data-management/routing/rate-control/)
+- [Logs Rate Control](https://docs.kloudfuse.com/platform/latest/data-management/routing/rate-control-logs/)
+- [Metrics Rate Control](https://docs.kloudfuse.com/platform/latest/data-management/routing/rate-control-metrics/)
+- [Traces Rate Control](https://docs.kloudfuse.com/platform/latest/data-management/routing/rate-control-traces/)
+- [Events Rate Control](https://docs.kloudfuse.com/platform/latest/data-management/routing/rate-control-events/)
+- [RUM Rate Control](https://docs.kloudfuse.com/platform/latest/data-management/routing/rate-control-rum/)
+
 ---
 
 ## Symptoms
@@ -148,7 +156,8 @@ ingester_rate_control_configured_rate{
 
 Review the current policy for the affected stream and class. Check:
 - **Ingestion Rate** — the maximum events/second allowed
-- **Burst** — the maximum burst size (recommended: `burst = rate` for 1-second bursts)
+- **Ingestion Rate** — the sustained maximum events/second for this stream; divided equally across all ingester replicas
+- **Burst** — the maximum number of events that can be ingested in a single spike; also divided across replicas and then distributed proportionally across classes. See [Burst Configuration](#burst-configuration) in Step 5 for guidance on setting this value
 - **Drop Percentage (1h)** — the historical drop percentage displayed in the UI
 
 If the current `allowed_rate` is close to the `configured_rate`, the ingestion volume is legitimately exceeding the limit.
@@ -190,13 +199,30 @@ A temporary burst following a service restart or log backfill will resolve on it
 
 ## Step 5: Remediation
 
-### Increase the Rate Limit
+### Burst Configuration
 
-If the traffic is legitimate and the rate limit is too low:
+Before increasing the sustained rate limit, consider whether the drops are caused by a short-lived spike that the burst setting could absorb.
+
+**How burst works:** The `Burst` value is the maximum number of events that can be accepted in a single instantaneous spike. Internally, the total burst is divided equally across all ingester replicas, and then each replica distributes its share proportionally across classes. This means a burst of `5000` across 5 replicas gives each ingester a burst of `1000`.
+
+**Burst size recommendations:**
+
+| Goal | Formula | Example (rate=10,000/sec) |
+|------|---------|--------------------------|
+| Absorb up to 1 second of excess traffic | `burst = rate` | `burst = 10000` |
+| Absorb up to N seconds of excess traffic | `burst = rate × N` | `burst = 30000` (3 seconds) |
+
+**Navigate to:** Kloudfuse UI → **Admin** → **Rate Control** → select the affected stream → update **Burst**
+
+If drops are occurring only during brief spikes (e.g., Case D: service restart or backfill), increasing burst is often the right fix without changing the sustained rate. For stream-specific defaults and guidance, see the [External Documentation](#summary) links.
+
+### Increase the Sustained Rate Limit
+
+If the traffic is legitimate and consistently exceeds the limit (not just burst spikes):
 
 **Navigate to:** Kloudfuse UI → **Admin** → **Rate Control** → select the affected stream
 
-Increase the **Ingestion Rate** to accommodate the actual volume. A safe starting point is 1.5× the current allowed rate. Increase **Burst** proportionally.
+Increase the **Ingestion Rate** to accommodate the actual volume. A safe starting point is 1.5× the current allowed rate. Update **Burst** proportionally using the formula above.
 
 ### Reduce the Ingestion Volume
 
@@ -268,5 +294,5 @@ Audit intentional drop classes regularly to ensure they still reflect current da
 
 ## Related Runbooks
 
-- [PV Usage Alert](pv_usage_alert.md) — Disk pressure that may affect ingester capacity
-- [Kfuse Observability Agents Not Running](kfuse-observability-agents.md) — Agent issues that may cause gaps in data
+- [Degraded Deployments](../degraded_deployments.md) — Ingester pod degradation that may reduce effective throughput capacity
+- [CrashLoopBackOff Alert](../crashloopbackupoff_alert.md) — Ingester pods crash-looping, which reduces replica count and lowers the effective burst and rate limits

@@ -51,10 +51,17 @@ All runbooks include this note in the Summary:
 
 When a step requires searching logs, direct the user to **Kloudfuse UI → Logs → Advanced Search** with a FuseQL query. Do not use `kubectl logs` for log searching. Use the following FuseQL conventions:
 
+- Filter by deployment: `kube_deployment="query-service"`
+- Filter by statefulset: `kube_stateful_set="pinot-broker"`
+- Filter by pod name: `kube_pod="<POD_NAME>"`
 - Filter by service: `kube_service="pinot-server"`
 - Filter by pod prefix: `kube_pod*~"pinot-server"`
 - Filter by level: `level=~"warn|error"` or `__kf_level="ERROR"`
 - Keyword search: `("Failed to load" or "Failed to download")`
+- Regex match on multiple values: `kube_stateful_set=~"pinot-server-realtime|pinot-server-offline"`
+- Combine filters: `kube_stateful_set="pinot-broker" and ("QueryException" or "timeout") and level=~"error|warn"`
+
+Use `kube_pod` for logs from a specific pod (e.g., a pod that has already restarted). Use `kube_deployment` or `kube_stateful_set` for component-wide searches.
 
 ### Scripts
 
@@ -98,7 +105,13 @@ Prompts for confirmation before the destructive StatefulSet delete. Vendor-speci
 | [alerts/pinot-segments-in-error-state.md](alerts/pinot-segments-in-error-state.md) | `pinot_controller_segmentsInErrorState_Value > 0` |
 | [alerts/pvc-volume-capacity-alert.md](alerts/pvc-volume-capacity-alert.md) | PVC usage exceeds 90% |
 | [alerts/node_status.md](alerts/node_status.md) | Node condition not Ready |
+| [alerts/node-high-cpu-usage.md](alerts/node-high-cpu-usage.md) | Node CPU usage >= 90% (5m avg) |
 | [alerts/kfuse-observability-agents.md](alerts/kfuse-observability-agents.md) | Kloudfuse agent not running on a node |
+| [alerts/kfuse-ingest-service-availability.md](alerts/kfuse-ingest-service-availability.md) | Ingest pipeline pods unavailable (envoy, nginx, transformers, Kafka, ingester) |
+| [alerts/kfuse-query-service-availability.md](alerts/kfuse-query-service-availability.md) | Query tier pods unavailable (query-service, Pinot controller/broker/server) |
+| [alerts/kfuse-user-access-service-availability.md](alerts/kfuse-user-access-service-availability.md) | User-facing pods unavailable (UI, beffe, auth, Grafana, user/config mgmt) |
+| [alerts/kfuse-misc-service-availability.md](alerts/kfuse-misc-service-availability.md) | Auxiliary service pods unavailable (vector agents, zapper, configdb, hydration) |
+| [alerts/kfuse-zookeeper-quorum-alert.md](alerts/kfuse-zookeeper-quorum-alert.md) | ZooKeeper quorum degraded (pinot-zookeeper replicas unavailable) |
 
 ---
 
@@ -128,14 +141,32 @@ Prompts for confirmation before the destructive StatefulSet delete. Vendor-speci
 
 ### JVM Memory Tuning
 
-Pinot components use `jvmMemory` in `values.yaml` to set heap size. Specify an integer followed by `G`:
+Different Pinot components use different fields in `charts/kfuse/values.yaml`:
+
+| Component | Field | Format | Example location |
+|-----------|-------|--------|-----------------|
+| `pinot-zookeeper` | `pinot.zookeeper.heapSize` | integer MB | line ~1598 |
+| `pinot-server-realtime` | `pinot.server.realtime.jvmMemory` | string with unit | line ~1711 |
+| `pinot-server-offline` | `pinot.server.offline.jvmMemory` | string with unit | line ~1722 |
+| `pinot-minion` | `pinot.minion.jvmMemory` | string with unit | line ~1736 |
+| `kafka-kraft-broker` | `kafka-kraft.broker.heapOpts` | full JVM flags | line ~1534 |
+
+Example:
 
 ```yaml
-server:
-  jvmMemory: 8G
+pinot:
+  zookeeper:
+    heapSize: 8192        # MB integer, default 4096
+  server:
+    realtime:
+      jvmMemory: "8G"
+    offline:
+      jvmMemory: "4G"
+  minion:
+    jvmMemory: "4G"
 ```
 
-This sets both `-Xms` and `-Xmx`. Only use `jvmOpts` for fine-grained JVM flag control. Reference implementation is in `~/PycharmProjects/incubator-pinot/kfuse-helm/values.yaml`.
+Apply changes with `helm upgrade`. For fine-grained JVM flag control use `jvmOpts` instead of `jvmMemory`.
 
 ### Namespace
 
