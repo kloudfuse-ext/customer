@@ -99,16 +99,16 @@ def parse_args():
         help=(
             "Also process alerts that don't look Kloudfuse-originated "
             "(no ruleType annotation, or non-3/4 data length). "
-            "Requires --folder; not allowed globally."
+            "Requires --folder and --group; not allowed at folder or global scope."
         ),
     )
     args = parser.parse_args()
     if args.group and not args.folder:
         parser.error("--group requires --folder")
-    if args.include_non_kloudfuse and not args.folder:
+    if args.include_non_kloudfuse and not (args.folder and args.group):
         parser.error(
-            "--include-non-kloudfuse requires --folder "
-            "(this flag is not allowed globally)"
+            "--include-non-kloudfuse requires --folder and --group "
+            "(this flag is not allowed at folder or global scope)"
         )
     return args
 
