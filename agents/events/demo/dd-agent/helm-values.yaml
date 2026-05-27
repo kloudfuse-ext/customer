@@ -1,0 +1,80 @@
+# Datadog Agent — Kubernetes Events → Kloudfuse
+#
+# Deploys the Datadog Cluster Agent + node Agents to collect Kubernetes events
+# (pod scheduling, node conditions, deployment rollouts) and forward them to Kloudfuse.
+#
+# Prerequisites:
+#   helm repo add datadog https://helm.datadoghq.com && helm repo update
+#
+# Deploy:
+#   kubectl create namespace datadog-agent
+#   helm upgrade --install datadog-agent datadog/datadog \
+#     -f helm-values.yaml \
+#     -n datadog-agent \
+#     --version 3.65.0
+#
+# Replace <kloudfuse-hostname> with the external hostname of your Kloudfuse cluster.
+# Agent version 7.41+ and Helm chart version 3.1.10+ are required.
+
+datadog:
+  # Any non-blank string satisfies the agent's API key validation when forwarding to Kloudfuse
+  apiKey: "kloudfuse"
+  dd_url: "https://<kloudfuse-hostname>/ingester"
+
+  # Disable legacy KSM check — use the core check only
+  kubeStateMetricsEnabled: false
+  kubeStateMetricsCore:
+    enabled: true
+    ignoreLegacyKSMCheck: true
+
+  orchestratorExplorer:
+    enabled: true
+
+  apm:
+    enabled: false
+
+  processAgent:
+    enabled: true
+
+clusterAgent:
+  replicaCount: 1
+  enabled: true
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+  datadog_cluster_yaml:
+    # Use the v2 Events API so events are forwarded to Kloudfuse
+    use_v2_api:
+      events: true
+      series: true
+      service_checks: true
+    orchestrator_explorer:
+      orchestrator_dd_url: "https://<kloudfuse-hostname>"
+    # Forward process-level and container lifecycle events
+    process_config:
+      events_dd_url: "https://<kloudfuse-hostname>/ingester"
+  admissionController:
+    enabled: false
+
+agents:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+  useConfigMap: true
+  customAgentConfig:
+    use_v2_api:
+      events: true
+      series: true
+      service_checks: true
+    # Forward process-level events from node agents as well
+    process_config:
+      events_dd_url: "https://<kloudfuse-hostname>/ingester"
+      container_collection:
+        enabled: false
+    metadata_providers:
+      - name: host
+        interval: 300

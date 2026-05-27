@@ -1,0 +1,96 @@
+# OTel Collector — Kubernetes Events → Kloudfuse
+#
+# Deploys the OTel Collector Contrib as a *Deployment* (not DaemonSet) to collect
+# Kubernetes events via the k8s_events receiver and forward them to Kloudfuse.
+#
+# IMPORTANT: Must be deployed as a Deployment, not a DaemonSet.
+#            DaemonSet mode causes duplicate events — upstream issue #42266.
+#
+# Prerequisites:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#   OTel Collector Contrib version 0.130.0 or later.
+#
+# Deploy:
+#   helm upgrade --install otel-events open-telemetry/opentelemetry-collector \
+#     -f helm-values.yaml \
+#     --namespace otel \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> with the external hostname of your Kloudfuse cluster.
+# Omit the Kf-Api-Key header if ingestion authentication is not enabled.
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+# Deploy as a single Deployment to avoid duplicate event collection
+mode: deployment
+replicaCount: 1
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+
+config:
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp/k8sevents:
+      # Kloudfuse treats data sent to /ingester/otlp/k8s_events as Kubernetes events
+      logs_endpoint: https://<kloudfuse-hostname>/ingester/otlp/k8s_events
+      headers:
+        Kf-Api-Key: <token>     # omit if auth is not enabled
+
+  extensions:
+    health_check: {}
+
+  receivers:
+    k8s_events: {}
+
+  processors:
+    batch:
+      timeout: 10s
+    resource/k8s_events:
+      attributes:
+        - key: kf_events_agent
+          value: "otlp"
+          action: upsert
+
+  service:
+    extensions: [health_check]
+    pipelines:
+      # Must be a separate pipeline — do not add k8s_events to an existing logs pipeline
+      logs/k8s_events:
+        receivers: [k8s_events]
+        processors: [resource/k8s_events, batch]
+        exporters: [otlphttp/k8sevents]
+
+service:
+  enabled: false
+
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+
+# Grant the Collector service account read access to events
+clusterRole:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: [events]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: [namespaces, nodes, pods]
+      verbs: ["get", "list", "watch"]
