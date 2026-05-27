@@ -1,0 +1,67 @@
+# Datadog Agent — PostgreSQL Metrics → Kloudfuse
+#
+# Deploys the Datadog Agent as a Kubernetes DaemonSet using the datadog/datadog Helm chart.
+# Monitors the kfuse-configdb PostgreSQL instance via Autodiscovery pod annotations.
+#
+# The Autodiscovery annotations live on the kfuse-configdb StatefulSet pod (see patch-annotations.yaml).
+# The agent on the same node discovers those annotations and runs the built-in postgres check.
+#
+# Prerequisites:
+#   helm repo add datadog https://helm.datadoghq.com && helm repo update
+#   kubectl apply -f patch-annotations.yaml   # adds Autodiscovery annotations to kfuse-configdb
+#
+# Deploy:
+#   helm upgrade --install datadog-postgres datadog/datadog \
+#     --version 3.65.0 \
+#     -f helm-values.yaml \
+#     --namespace datadog-agent \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <password> before applying.
+
+datadog:
+  apiKey: "kloudfuse"
+  dd_url: "https://<kloudfuse-hostname>/ingester"
+
+  # Disable everything except metrics
+  logs:
+    enabled: false
+  apm:
+    enabled: false
+  processAgent:
+    enabled: false
+  orchestratorExplorer:
+    enabled: false
+  kubeStateMetricsEnabled: false
+  kubeStateMetricsCore:
+    enabled: false
+  prometheusScrape:
+    enabled: false
+
+clusterAgent:
+  enabled: true
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+    - key: "node.kubernetes.io/memory-pressure"
+      operator: "Exists"
+      effect: "NoSchedule"
+  datadog_cluster_yaml:
+    use_v2_api:
+      series: true
+
+agents:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+    - key: "node.kubernetes.io/memory-pressure"
+      operator: "Exists"
+      effect: "NoSchedule"
+  useConfigMap: true
+  customAgentConfig:
+    use_v2_api:
+      series: true
