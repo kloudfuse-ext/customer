@@ -1,0 +1,90 @@
+---
+# Kubernetes Logs Emitter Demo
+# Image:   python:3.12-slim (Docker Hub) — writes structured JSON logs to stdout at 1 line/second.
+# Logs:    collected from /var/log/containers/ by any node-level log agent (dd-agent, otel, filebeat, fluentd, elastic)
+# Emits:   INFO, WARN, and ERROR records cycling through realistic request/response fields
+#
+# Deploy:
+#   kubectl apply -f manifest.yaml
+#   kubectl logs logs-demo -n steve -f
+apiVersion: v1
+kind: Pod
+metadata:
+  name: logs-demo
+  namespace: steve
+  labels:
+    app: logs-demo
+    # Annotation used by Datadog Agent for per-pod log source override
+    tags.datadoghq.com/service: logs-demo
+    tags.datadoghq.com/env: dev
+  annotations:
+    # Datadog Autodiscovery — set log source and service for this pod
+    ad.datadoghq.com/log-emitter.logs: '[{"source": "logs-demo", "service": "logs-demo"}]'
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  containers:
+    - name: log-emitter
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          cat > /emitter.py << 'PYCODE'
+          import json, time, datetime, os, socket
+
+          pod_name  = os.environ.get("POD_NAME", socket.gethostname())
+          namespace = os.environ.get("POD_NAMESPACE", "steve")
+
+          records = [
+              ("INFO",  "request completed",      {"method": "GET",  "path": "/api/health",   "status": 200, "latency_ms": 12}),
+              ("WARN",  "slow response detected",  {"method": "POST", "path": "/api/ingest",   "status": 200, "latency_ms": 452}),
+              ("ERROR", "upstream timeout",        {"method": "GET",  "path": "/api/data",     "status": 503, "latency_ms": 5001}),
+              ("INFO",  "cache hit",               {"method": "GET",  "path": "/api/metrics",  "status": 200, "latency_ms": 3}),
+              ("WARN",  "rate limit approaching",  {"method": "POST", "path": "/api/events",   "status": 200, "latency_ms": 87}),
+              ("INFO",  "user authenticated",      {"method": "POST", "path": "/api/login",    "status": 200, "latency_ms": 34}),
+              ("ERROR", "database connection lost",{"method": "GET",  "path": "/api/records",  "status": 500, "latency_ms": 2}),
+          ]
+
+          print("logs-demo starting log loop (1 log/second)", flush=True)
+          counter = 0
+
+          while True:
+              level, message, fields = records[counter % len(records)]
+              now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+              record = {
+                  "timestamp": now,
+                  "level": level,
+                  "message": message,
+                  "service": "logs-demo",
+                  "pod": pod_name,
+                  "namespace": namespace,
+                  "counter": counter,
+              }
+              record.update(fields)
+              print(json.dumps(record), flush=True)
+              counter += 1
+              time.sleep(1)
+          PYCODE
+
+          exec python /emitter.py
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "100m"
+          memory: "128Mi"

@@ -1,0 +1,51 @@
+# Fluentd — Container Logs → Kloudfuse
+#
+# Deploys Fluentd as a Kubernetes DaemonSet using the fluent/helm-charts chart.
+# Collects container logs and forwards them to Kloudfuse via the HTTP output plugin.
+#
+# Prerequisites:
+#   helm repo add fluent https://fluent.github.io/helm-charts && helm repo update
+#
+# Deploy:
+#   helm upgrade --install fluentd fluent/fluentd \
+#     -f helm-values.yaml \
+#     --namespace logging \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit Kf-Api-Key header if auth is not enabled).
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+
+# Install the kubernetes_metadata filter plugin
+plugins:
+  - fluent-plugin-kubernetes_metadata_filter
+
+fileConfigs:
+  # Only override the output — the chart's default 02_filters.conf already applies
+  # kubernetes_metadata enrichment through its @KUBERNETES → @DISPATCH → @OUTPUT label chain.
+  04_outputs.conf: |-
+    <label @OUTPUT>
+      <match **>
+        @type http
+
+        endpoint https://<kloudfuse-hostname>/ingester/v1/fluentd
+        open_timeout 2
+
+        <headers>
+          Kf-Api-Key <token>
+        </headers>
+
+        <format>
+          @type json
+        </format>
+
+        <buffer>
+          chunk_limit_size 1048576
+          flush_interval 10s
+        </buffer>
+      </match>
+    </label>

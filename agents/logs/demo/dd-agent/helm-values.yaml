@@ -1,0 +1,62 @@
+# Datadog Agent — Container Logs → Kloudfuse
+#
+# Deploys the Datadog node Agent as a DaemonSet to collect container logs from all
+# pods on each node and forward them to Kloudfuse.
+#
+# Prerequisites:
+#   helm repo add datadog https://helm.datadoghq.com && helm repo update
+#
+# Deploy:
+#   kubectl create namespace datadog-agent
+#   helm upgrade --install datadog-agent datadog/datadog \
+#     -f helm-values.yaml \
+#     -n datadog-agent \
+#     --version 3.65.0
+#
+# Replace <kloudfuse-hostname> with the external hostname of your Kloudfuse cluster.
+# Agent version 7.41+ and Helm chart version 3.1.10+ are required.
+
+datadog:
+  # Any non-blank string satisfies the agent's API key validation when forwarding to Kloudfuse
+  apiKey: "kloudfuse"
+  dd_url: "https://<kloudfuse-hostname>/ingester"
+
+  logsEnabled: true
+  logs:
+    enabled: true
+    containerCollectAll: true
+    containerCollectUsingFiles: true
+    autoMultiLineDetection: true
+
+  # Disable unused features for a logs-only deployment
+  kubeStateMetricsEnabled: false
+  kubeStateMetricsCore:
+    enabled: false
+  orchestratorExplorer:
+    enabled: false
+  apm:
+    enabled: false
+  processAgent:
+    enabled: false
+
+# Disable the Cluster Agent — not required for log collection
+clusterAgent:
+  enabled: false
+
+agents:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+  useConfigMap: true
+  customAgentConfig:
+    logs_config:
+      logs_dd_url: "<kloudfuse-hostname>:443"   # logs use host:port format (no /ingester prefix)
+      logs_no_ssl: false
+      use_http: true
+      auto_multi_line_detection: true
+      use_v2_api: false
+    metadata_providers:
+      - name: host
+        interval: 300
