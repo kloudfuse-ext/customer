@@ -1,0 +1,87 @@
+---
+# New Relic APM Demo
+# Image:   python:3.12-slim — pip-installs newrelic and runs a trace loop inline.
+# Traces:  New Relic agent → https://<KFUSE_CLUSTER_DNS> (agent constructs the collector URL)
+# Emits:   one transaction/second — "WebTransaction/demo" with a "db/query" segment
+# Service: demo-newrelic-service
+#
+# Replace <KFUSE_CLUSTER_DNS> before applying.
+# If auth is not enabled, remove the NEW_RELIC_LICENSE_KEY env var.
+#
+# Deploy:
+#   kubectl apply -f manifest.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apm-demo-newrelic
+  namespace: steve
+  labels:
+    app: apm-demo-newrelic
+    language: python
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: pip-cache
+      emptyDir: {}
+
+  containers:
+    - name: newrelic-app
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+
+          # ---- install New Relic Python agent ----
+          pip install --quiet --cache-dir /pip-cache newrelic
+
+          # ---- write trace loop application ----
+          cat > /app.py << 'PYCODE'
+          import time, newrelic.agent
+
+          newrelic.agent.initialize()
+
+          application = newrelic.agent.register_application(timeout=10.0)
+
+          print("demo-newrelic-service starting trace loop (1 transaction/second)", flush=True)
+
+          while True:
+              with newrelic.agent.BackgroundTask(application, name="demo/loop", group="Task"):
+                  with newrelic.agent.FunctionTrace(name="db/query", group="db"):
+                      time.sleep(0.05)
+              time.sleep(1)
+          PYCODE
+
+          exec python /app.py
+      env:
+        - name: NEW_RELIC_APP_NAME
+          value: "demo-newrelic-service"
+        # NEW_RELIC_HOST must be the bare hostname — no protocol prefix, no trailing slash.
+        # The agent constructs https://<host>/agent_listener/invoke_raw_method internally.
+        - name: NEW_RELIC_HOST
+          value: "<KFUSE_CLUSTER_DNS>"
+        - name: NEW_RELIC_LICENSE_KEY   # omit if auth is not enabled
+          valueFrom:
+            secretKeyRef:
+              name: kloudfuse-api-key
+              key: value
+        - name: NEW_RELIC_LOG
+          value: "stdout"
+        - name: NEW_RELIC_LOG_LEVEL
+          value: "info"
+      volumeMounts:
+        - name: pip-cache
+          mountPath: /pip-cache
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"

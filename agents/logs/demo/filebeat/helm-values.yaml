@@ -1,0 +1,48 @@
+# Filebeat — Container Logs → Kloudfuse
+#
+# Deploys Filebeat as a Kubernetes DaemonSet using the elastic/filebeat Helm chart.
+# Collects container logs from /var/log/containers/ on each node and forwards them
+# to Kloudfuse via the Elasticsearch output plugin.
+#
+# Prerequisites:
+#   helm repo add elastic https://helm.elastic.co && helm repo update
+#
+# Deploy:
+#   helm upgrade --install filebeat elastic/filebeat \
+#     -f helm-values.yaml \
+#     --namespace logging \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit Kf-Api-Key header if auth is not enabled).
+
+daemonset:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+  # Disable default elasticsearch TLS cert and credentials — not needed when pointing at Kloudfuse
+  secretMounts: []
+  extraEnvs: []
+
+  filebeatConfig:
+    filebeat.yml: |
+      filebeat.inputs:
+        - type: container
+          paths:
+            - /var/log/containers/*.log
+          processors:
+            - add_kubernetes_metadata:
+                host: ${NODE_NAME}
+                matchers:
+                  - logs_path:
+                      logs_path: "/var/log/containers/"
+
+      # Required — Kloudfuse does not implement Elasticsearch index management APIs
+      setup.ilm.enabled: false
+      setup.template.enabled: false
+
+      output.elasticsearch:
+        hosts: ["https://<kloudfuse-hostname>:443/ingester/api/v1/filebeat"]
+        headers:
+          Kf-Api-Key: <token>   # omit if auth is not enabled

@@ -1,0 +1,136 @@
+# OTel Collector — PostgreSQL Metrics → Kloudfuse
+#
+# Deploys the OTel Collector Contrib as a Kubernetes Deployment using the
+# open-telemetry/opentelemetry-collector Helm chart.
+# Connects directly to kfuse-configdb and collects metrics via the postgresqlreceiver.
+# Deployed as a Deployment (not DaemonSet) — a single collector pod is sufficient.
+#
+# Prerequisites:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#
+#   # Store the monitoring user password as a Kubernetes secret:
+#   kubectl create secret generic otel-postgres-credentials \
+#     --from-literal=password='<password>' \
+#     -n otel
+#
+# Deploy:
+#   helm upgrade --install otel-postgres open-telemetry/opentelemetry-collector \
+#     -f helm-values.yaml \
+#     --namespace otel \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> before applying.
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+mode: deployment
+replicaCount: 1
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+  - key: "node.kubernetes.io/memory-pressure"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# No hostPorts needed for a Deployment-mode metrics-only collector
+service:
+  enabled: false
+
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: false
+
+extraEnvs:
+  - name: PG_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: otel-postgres-credentials
+        key: password
+
+config:
+  extensions:
+    health_check: {}
+
+  receivers:
+    postgresql:
+      endpoint: <postgres-host>:<postgres-port>
+      username: kfmon
+      password: ${env:PG_PASSWORD}
+      databases:
+        - postgres
+        - configdb
+        - alertsdb
+        - apmconfigdb
+      tls:
+        insecure: true
+      collection_interval: 60s
+
+  processors:
+    batch:
+      timeout: 10s
+    resource:
+      attributes:
+        - key: service.name
+          value: kfuse-configdb
+          action: upsert
+        - key: db.system
+          value: postgresql
+          action: upsert
+        # DD-parity labels
+        - key: env
+          value: dev
+          action: upsert
+        - key: kube_namespace
+          value: steve
+          action: upsert
+        - key: kube_service
+          value: kfuse-configdb
+          action: upsert
+        - key: kube_stateful_set
+          value: kfuse-configdb
+          action: upsert
+        - key: host
+          value: <postgres-host>
+          action: upsert
+        - key: port
+          value: "5432"
+          action: upsert
+        - key: replication_role
+          value: master
+          action: upsert
+        - key: postgresql_version
+          value: "14.18"
+          action: upsert
+
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp:
+      metrics_endpoint: https://<kloudfuse-hostname>/ingester/otlp/metrics
+      headers:
+        Kf-Api-Key: <token>     # omit if auth is not enabled
+
+  service:
+    extensions: [health_check]
+    pipelines:
+      metrics:
+        receivers: [postgresql]
+        processors: [resource, batch]
+        exporters: [otlphttp]

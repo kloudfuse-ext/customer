@@ -1,0 +1,123 @@
+# OTel Collector — MongoDB Metrics → Kloudfuse
+#
+# Deploys the OTel Collector Contrib as a Kubernetes Deployment using the
+# open-telemetry/opentelemetry-collector Helm chart.
+# Connects directly to MongoDB and collects metrics via the mongodbreceiver.
+# Deployed as a Deployment (not DaemonSet) — a single collector pod is sufficient.
+#
+# Prerequisites:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#
+#   # Store the monitoring user password as a Kubernetes secret:
+#   kubectl create secret generic otel-mongodb-credentials \
+#     --from-literal=password='<password>' \
+#     -n otel
+#
+# Deploy:
+#   helm upgrade --install otel-mongodb open-telemetry/opentelemetry-collector \
+#     -f helm-values.yaml \
+#     --namespace otel \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <mongodb-host> before applying.
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+mode: deployment
+replicaCount: 1
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+  - key: "node.kubernetes.io/memory-pressure"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# No hostPorts needed for a Deployment-mode metrics-only collector
+service:
+  enabled: false
+
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: false
+
+extraEnvs:
+  - name: MONGO_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: otel-mongodb-credentials
+        key: password
+
+config:
+  extensions:
+    health_check: {}
+
+  receivers:
+    mongodb:
+      hosts:
+        - endpoint: <mongodb-host>:<mongodb-port>
+      username: kfmon
+      password: ${env:MONGO_PASSWORD}
+      collection_interval: 60s
+      tls:
+        insecure: true
+
+  processors:
+    batch:
+      timeout: 10s
+    resource:
+      attributes:
+        - key: service.name
+          value: kfuse-mongodb
+          action: upsert
+        - key: db.system
+          value: mongodb
+          action: upsert
+        # DD-parity labels
+        - key: env
+          value: dev
+          action: upsert
+        - key: kube_namespace
+          value: steve
+          action: upsert
+        - key: kube_service
+          value: kfuse-mongodb
+          action: upsert
+        - key: host
+          value: <mongodb-host>
+          action: upsert
+        - key: port
+          value: "27017"
+          action: upsert
+
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp:
+      metrics_endpoint: https://<kloudfuse-hostname>/ingester/otlp/metrics
+      headers:
+        Kf-Api-Key: <token>     # omit if auth is not enabled
+
+  service:
+    extensions: [health_check]
+    pipelines:
+      metrics:
+        receivers: [mongodb]
+        processors: [resource, batch]
+        exporters: [otlphttp]

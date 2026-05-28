@@ -1,0 +1,114 @@
+# OTel Collector — Metrics → Kloudfuse
+#
+# Deploys the OTel Collector Contrib as a Kubernetes DaemonSet using the
+# open-telemetry/opentelemetry-collector Helm chart.
+# Collects host metrics, kubelet stats, and scrapes Prometheus endpoints via
+# the prometheusreceiver. Forwards metrics to Kloudfuse over OTLP HTTP.
+#
+# Prerequisites:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#
+# Deploy:
+#   helm upgrade --install otel-metrics open-telemetry/opentelemetry-collector \
+#     -f helm-values.yaml \
+#     --namespace otel \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit Kf-Api-Key header if auth is not enabled).
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+mode: daemonset
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+
+service:
+  enabled: false
+
+ports:
+  metrics:
+    enabled: false
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  zipkin:
+    enabled: false
+
+presets:
+  kubernetesAttributes:
+    enabled: true
+  kubeletMetrics:
+    enabled: true
+
+config:
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp:
+      metrics_endpoint: https://<kloudfuse-hostname>/ingester/otlp/metrics
+      headers:
+        Kf-Api-Key: <token>     # omit if auth is not enabled
+
+  extensions:
+    health_check: {}
+
+  processors:
+    batch:
+      timeout: 10s
+    resource:
+      attributes:
+        - key: kf_metrics_agent
+          value: "otlp"
+          action: upsert
+    resourcedetection:
+      detectors: [env, gcp, eks, ec2, aks, azure]
+      override: false
+      timeout: 2s
+
+  receivers:
+    prometheus:
+      config:
+        scrape_configs:
+          # Scrape pods annotated with prometheus.io/scrape=true
+          - job_name: kubernetes-pods
+            kubernetes_sd_configs:
+              - role: pod
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                action: keep
+                regex: "true"
+              - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+                action: replace
+                target_label: __metrics_path__
+                regex: (.+)
+              - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                action: replace
+                regex: ([^:]+)(?::\d+)?;(\d+)
+                replacement: $1:$2
+                target_label: __address__
+              - source_labels: [__meta_kubernetes_namespace]
+                target_label: kubernetes_namespace
+              - source_labels: [__meta_kubernetes_pod_name]
+                target_label: kubernetes_pod_name
+
+  service:
+    extensions: [health_check]
+    pipelines:
+      metrics:
+        receivers: [prometheus]
+        processors: [resource, resourcedetection, batch]
+        exporters: [otlphttp]
+

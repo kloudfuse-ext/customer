@@ -1,0 +1,53 @@
+# Prometheus — Metrics → Kloudfuse via Remote Write
+#
+# Deploys Prometheus as a Kubernetes Deployment using the prometheus-community/prometheus
+# Helm chart. Scrapes all pods annotated with prometheus.io/scrape=true (including
+# metrics-demo) and forwards metrics to Kloudfuse via Prometheus remote write.
+#
+# Prerequisites:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#
+# Deploy:
+#   helm upgrade --install prometheus-metrics prometheus-community/prometheus \
+#     -f helm-values.yaml \
+#     --namespace prometheus \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit authorization block if auth is not enabled).
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+
+server:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+serverFiles:
+  prometheus.yml:
+    remote_write:
+      - url: https://<kloudfuse-hostname>/ingester/write
+        authorization:
+          credentials: <token>           # omit if auth is not enabled
+        queue_config:
+          max_samples_per_send: 4000
+
+# Disable components not needed for this demo
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"

@@ -1,0 +1,79 @@
+# MongoDB — Bitnami Helm Chart
+#
+# Deploys a standalone MongoDB instance into the steve namespace on the steve node.
+# Creates a dedicated monitoring user (kfmon) for use by the Datadog Agent and OTel Collector.
+#
+# Deploy:
+#   helm upgrade --install kfuse-mongodb bitnami/mongodb \
+#     -f mongodb-helm-values.yaml \
+#     --namespace steve
+#
+# Monitoring connection (in-cluster):
+#   <mongodb-service-name>.<namespace>.svc.cluster.local:27017
+
+image:
+  tag: "7.0"
+
+architecture: standalone
+
+auth:
+  enabled: true
+  rootUser: root
+  rootPassword: "<root-password>"
+  # Additional monitoring user created at startup
+  usernames:
+    - kfmon
+  passwords:
+    - <password>
+  databases:
+    - admin
+
+# Run the kfmon user creation post-init — the bitnami chart creates users
+# only in the specified database, so we promote kfmon to clusterMonitor via initdbScripts.
+initdbScripts:
+  create_monitor_user.js: |
+    db = db.getSiblingDB("admin");
+    try {
+      db.createUser({
+        user: "kfmon",
+        pwd: "<password>",
+        roles: [
+          { role: "clusterMonitor", db: "admin" },
+          { role: "read", db: "local" }
+        ]
+      });
+      print("kfmon user created");
+    } catch(e) {
+      // User may already exist on restart
+      print("kfmon user already exists or error: " + e);
+    }
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+# Schedule on steve's node
+nodeSelector:
+  owner: steve
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+  - key: "node.kubernetes.io/memory-pressure"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Service — ClusterIP is sufficient; monitoring agents access in-cluster
+service:
+  type: ClusterIP
+  port: 27017
