@@ -8,7 +8,7 @@ built-in `mongo` check via Kubernetes Autodiscovery.
 - The agent discovers the `kfuse-mongodb` pod via Autodiscovery annotations.
 - It resolves `%%host%%` to the pod's cluster IP and opens a TCP connection to port 27017.
 - It runs the mongo check, collecting metrics from `serverStatus`, `dbStats`, and replication status.
-- Metrics are forwarded to `https://steve-dev-gcp.kloudfuse.io/ingester`.
+- Metrics are forwarded to `https://<kloudfuse-hostname>/ingester`.
 
 ## Monitoring user
 

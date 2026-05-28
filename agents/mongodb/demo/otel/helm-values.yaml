@@ -71,7 +71,7 @@ config:
   receivers:
     mongodb:
       hosts:
-        - endpoint: kfuse-mongodb.steve.svc.cluster.local:27017
+        - endpoint: <mongodb-host>:<mongodb-port>
       username: kfmon
       password: ${env:MONGO_PASSWORD}
       collection_interval: 60s
@@ -100,7 +100,7 @@ config:
           value: kfuse-mongodb
           action: upsert
         - key: host
-          value: kfuse-mongodb.steve.svc.cluster.local
+          value: <mongodb-host>
           action: upsert
         - key: port
           value: "27017"
@@ -110,9 +110,9 @@ config:
     debug:
       verbosity: basic
     otlphttp:
-      metrics_endpoint: https://steve-dev-gcp.kloudfuse.io/ingester/otlp/metrics
+      metrics_endpoint: https://<kloudfuse-hostname>/ingester/otlp/metrics
       headers:
-        Kf-Api-Key: <kloudfuse-api-token>
+        Kf-Api-Key: <token>     # omit if auth is not enabled
 
   service:
     extensions: [health_check]

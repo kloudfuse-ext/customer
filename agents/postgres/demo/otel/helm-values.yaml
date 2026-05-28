@@ -70,8 +70,7 @@ config:
 
   receivers:
     postgresql:
-      # kfuse-configdb in the steve namespace
-      endpoint: kfuse-configdb.steve.svc.cluster.local:5432
+      endpoint: <postgres-host>:<postgres-port>
       username: kfmon
       password: ${env:PG_PASSWORD}
       databases:
@@ -108,7 +107,7 @@ config:
           value: kfuse-configdb
           action: upsert
         - key: host
-          value: kfuse-configdb.steve.svc.cluster.local
+          value: <postgres-host>
           action: upsert
         - key: port
           value: "5432"

@@ -42,8 +42,6 @@ config:
     debug:
       verbosity: basic
     otlphttp:
-      tls:
-        insecure: true          # remove if using https
       logs_endpoint: https://<kloudfuse-hostname>/ingester/otlp/v1/logs
       headers:
         Kf-Api-Key: <token>     # omit if auth is not enabled

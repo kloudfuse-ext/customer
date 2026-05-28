@@ -6,9 +6,9 @@ Collector `mongodbreceiver`, deployed as a single-pod Deployment in the `otel` n
 ## How it works
 
 - The OTel Collector Contrib image (`otel/opentelemetry-collector-contrib`) connects directly
-  to `kfuse-mongodb.steve.svc.cluster.local:27017` using the `kfmon` monitoring user.
+  to `<mongodb-host>:<mongodb-port>` using the `kfmon` monitoring user.
 - It queries `serverStatus` and `dbStats` every 60 seconds via the `mongodbreceiver`.
-- Metrics are exported via OTLP HTTP to `https://steve-dev-gcp.kloudfuse.io/ingester/otlp/metrics`.
+- Metrics are exported via OTLP HTTP to `https://<kloudfuse-hostname>/ingester/otlp/metrics`.
 - Deployed as a `Deployment` (not DaemonSet) — a single collector pod is sufficient for
   database monitoring.
 

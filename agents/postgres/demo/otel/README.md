@@ -6,7 +6,7 @@ Collector `postgresqlreceiver`, deployed as a single-pod Deployment in the `otel
 ## How it works
 
 - The OTel Collector Contrib image (`otel/opentelemetry-collector-contrib`) connects directly
-  to `kfuse-configdb.steve.svc.cluster.local:5432` using the `kfmon` monitoring user.
+  to `<postgres-host>:<postgres-port>` using the `kfmon` monitoring user.
 - It queries `pg_stat_database`, `pg_stat_bgwriter`, `pg_stat_statements`, and
   `pg_stat_replication` every 60 seconds.
 - Metrics are exported via OTLP HTTP to `https://<kloudfuse-hostname>/ingester/otlp/metrics`.
@@ -27,8 +27,11 @@ GRANT SELECT ON pg_stat_statements_info TO kfmon;  -- required on PostgreSQL 14+
 ```
 
 `pg_monitor` (PostgreSQL 10+) grants read-only access to all monitoring views without
-any write privileges. The `CONNECTION LIMIT 5` cap prevents the monitoring user from
-consuming connection slots needed by the application.
+any write privileges. `CONNECTION LIMIT 20` is required for the OTel `postgresqlreceiver`
+because it opens one connection per database per metric query — monitoring 4 databases
+requires up to ~24 concurrent connections per scrape cycle. A limit of 5 causes
+`too many connections for role` errors on every scrape. The dd-agent check, by contrast,
+uses a single persistent connection per instance and only needs `CONNECTION LIMIT 5`.
 
 ## Prerequisites
 

@@ -21,7 +21,7 @@
 
 datadog:
   apiKey: "kloudfuse"
-  dd_url: "https://steve-dev-gcp.kloudfuse.io/ingester"
+  dd_url: "https://<kloudfuse-hostname>/ingester"
 
   # Disable everything except metrics
   logs:

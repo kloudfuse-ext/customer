@@ -1,7 +1,7 @@
 # APM Demo — Go
 
 A minimal Go application instrumented with the **OpenTelemetry Go SDK**.
-Traces are exported via OTLP/HTTP to `https://<KFUSE_DNS>/ingester/otlp/traces`.
+Traces are exported via OTLP/HTTP to `https://<KFUSE_CLUSTER_DNS>/ingester/otlp/traces`.
 
 ## How it works
 

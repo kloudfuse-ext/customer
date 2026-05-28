@@ -9,7 +9,7 @@
 #     --namespace steve
 #
 # Monitoring connection (in-cluster):
-#   kfuse-mongodb.steve.svc.cluster.local:27017
+#   <mongodb-service-name>.<namespace>.svc.cluster.local:27017
 
 image:
   tag: "7.0"
@@ -19,7 +19,7 @@ architecture: standalone
 auth:
   enabled: true
   rootUser: root
-  rootPassword: "kfuseroot"
+  rootPassword: "<root-password>"
   # Additional monitoring user created at startup
   usernames:
     - kfmon

@@ -19,7 +19,7 @@ KFUSE_API_KEY="${KFUSE_API_KEY:-}"
 ENDPOINT="https://${KFUSE_HOST}/ingester/github/events"
 
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-COMMIT_SHA="$(openssl rand -hex 20 2>/dev/null || head -c 20 /dev/urandom | xxd -p | tr -d '\n')"
+COMMIT_SHA="$(openssl rand -hex 20 2>/dev/null || od -An -N20 -tx1 /dev/urandom | tr -d ' \n')"
 
 PAYLOAD=$(cat <<EOF
 {
