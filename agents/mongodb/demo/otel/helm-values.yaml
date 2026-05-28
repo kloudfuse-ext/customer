@@ -112,7 +112,7 @@ config:
     otlphttp:
       metrics_endpoint: https://steve-dev-gcp.kloudfuse.io/ingester/otlp/metrics
       headers:
-        Kf-Api-Key: ***REMOVED***
+        Kf-Api-Key: <kloudfuse-api-token>
 
   service:
     extensions: [health_check]
