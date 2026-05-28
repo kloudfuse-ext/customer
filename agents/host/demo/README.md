@@ -48,8 +48,8 @@ kubectl logs host-demo -n <namespace> -f
 │  Kubernetes Node / VM                   │
 │                                         │
 │  ┌──────────────┐    OTLP HTTP          │
-│  │  host-demo   │ ──:4318──────────┐   │
-│  │  pod         │                  ▼   │
+│  │  host-demo   │ ──:4318──────────┐    │
+│  │  pod         │                  ▼    │
 │  │  (hostNet)   │    ┌─────────────────┐│
 │  └──────────────┘    │  Local Agent    ││
 │                      │  (dd-agent or   ││
