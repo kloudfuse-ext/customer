@@ -1,0 +1,169 @@
+---
+# Host / VM Demo — Telemetry Emitter Pod
+# Image:   python:3.12-slim (Docker Hub) — pip-installs OTel SDK and emits metrics, logs,
+#          and traces to a local agent (Datadog Agent or OTel Collector) running on the same host.
+#
+# The pod simulates a workload running on a standalone host or VM (e.g. AWS EC2).
+# It sends all three signal types to localhost, where the local agent collects and
+# forwards them to Kloudfuse.
+#
+# Designed to be used alongside either:
+#   dd-agent/   — Datadog Agent installed directly on the host
+#   otel/       — OTel Collector installed directly on the host
+#
+# Deploy:
+#   kubectl apply -f manifest.yaml
+#
+# NOTE: The pod uses hostNetwork: true so that localhost resolves to the node's
+#       network interface, where the local agent is listening.
+# NOTE: First startup takes ~40 s while pip installs OpenTelemetry packages.
+#       Subsequent restarts reuse the pip cache in /pip-cache (emptyDir).
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: host-demo
+  namespace: <namespace>
+  labels:
+    app: host-demo
+    tags.datadoghq.com/service: host-demo
+    tags.datadoghq.com/env: dev
+  annotations:
+    # Datadog Autodiscovery — set log source and service for this pod
+    ad.datadoghq.com/host-demo.logs: '[{"source": "host-demo", "service": "host-demo"}]'
+spec:
+  hostNetwork: true          # required: localhost resolves to the node where the agent runs
+  dnsPolicy: ClusterFirstWithHostNet
+  restartPolicy: Always
+
+  volumes:
+    - name: pip-cache
+      emptyDir: {}
+
+  containers:
+    - name: host-demo
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+
+          pip install --quiet --cache-dir /pip-cache \
+            opentelemetry-sdk \
+            opentelemetry-exporter-otlp-proto-http
+
+          cat > /app.py << 'PYCODE'
+          import json
+          import logging
+          import os
+          import time
+          import datetime
+
+          from opentelemetry import trace, metrics
+          from opentelemetry.sdk.trace import TracerProvider
+          from opentelemetry.sdk.trace.export import BatchSpanProcessor
+          from opentelemetry.sdk.metrics import MeterProvider
+          from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+          from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+          from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+          from opentelemetry.sdk.resources import Resource
+          from opentelemetry.trace import SpanKind
+
+          SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "host-demo")
+          AGENT_ENDPOINT = os.environ.get("AGENT_ENDPOINT", "http://localhost:4318")
+
+          resource = Resource.create({
+              "service.name": SERVICE_NAME,
+              "deployment.environment.name": "dev",
+              "kf_platform": "host",
+          })
+
+          # --- Traces ---
+          tracer_provider = TracerProvider(resource=resource)
+          tracer_provider.add_span_processor(
+              BatchSpanProcessor(
+                  OTLPSpanExporter(endpoint=f"{AGENT_ENDPOINT}/v1/traces")
+              )
+          )
+          trace.set_tracer_provider(tracer_provider)
+          tracer = trace.get_tracer(SERVICE_NAME)
+
+          # --- Metrics ---
+          metric_reader = PeriodicExportingMetricReader(
+              OTLPMetricExporter(endpoint=f"{AGENT_ENDPOINT}/v1/metrics"),
+              export_interval_millis=15000,
+          )
+          meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+          metrics.set_meter_provider(meter_provider)
+          meter = metrics.get_meter(SERVICE_NAME)
+
+          request_counter   = meter.create_counter("demo_requests_total",   description="Total requests")
+          error_counter     = meter.create_counter("demo_errors_total",     description="Total errors")
+          active_gauge      = meter.create_up_down_counter("demo_active_connections", description="Active connections")
+          latency_histogram = meter.create_histogram("demo_request_duration_seconds", description="Request duration")
+
+          # --- Logs ---
+          logging.basicConfig(
+              format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "message": %(message)s, "service": "%(name)s"}',
+              datefmt="%Y-%m-%dT%H:%M:%SZ",
+              level=logging.INFO,
+          )
+          logger = logging.getLogger(SERVICE_NAME)
+
+          log_records = [
+              (logging.INFO,    "request completed",       {"method": "GET",  "path": "/api/health",  "status": 200, "latency_ms": 12}),
+              (logging.WARNING, "slow response detected",  {"method": "POST", "path": "/api/ingest",  "status": 200, "latency_ms": 452}),
+              (logging.ERROR,   "upstream timeout",        {"method": "GET",  "path": "/api/data",    "status": 503, "latency_ms": 5001}),
+              (logging.INFO,    "cache hit",               {"method": "GET",  "path": "/api/metrics", "status": 200, "latency_ms": 3}),
+          ]
+
+          print(f"host-demo starting (traces + metrics + logs → {AGENT_ENDPOINT})", flush=True)
+          counter = 0
+          active_connections = 3
+
+          while True:
+              # Emit a trace
+              with tracer.start_as_current_span("handle_request", kind=SpanKind.SERVER) as span:
+                  span.set_attribute("http.method", "GET")
+                  span.set_attribute("http.route", "/api/health")
+                  span.set_attribute("http.status_code", 200)
+                  with tracer.start_as_current_span("db_query", kind=SpanKind.CLIENT):
+                      time.sleep(0.05)
+
+              # Emit metrics
+              request_counter.add(1, {"route": "/api/health", "status": "200"})
+              latency_histogram.record(0.05, {"route": "/api/health"})
+              if counter % 10 == 0:
+                  error_counter.add(1, {"route": "/api/data", "status": "503"})
+              active_gauge.add(active_connections)
+
+              # Emit a structured log
+              level, message, fields = log_records[counter % len(log_records)]
+              logger.log(level, json.dumps({"event": message, **fields}))
+
+              counter += 1
+              time.sleep(1)
+          PYCODE
+
+          exec python /app.py
+
+      env:
+        - name: OTEL_SERVICE_NAME
+          value: "host-demo"
+        # AGENT_ENDPOINT: point at the local agent OTLP HTTP receiver.
+        # dd-agent:  http://localhost:4318  (OTel receiver enabled in datadog.yaml)
+        # otel:      http://localhost:4318  (default otlp http port)
+        - name: AGENT_ENDPOINT
+          value: "http://localhost:4318"
+
+      volumeMounts:
+        - name: pip-cache
+          mountPath: /pip-cache
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"

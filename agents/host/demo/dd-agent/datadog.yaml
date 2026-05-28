@@ -1,0 +1,49 @@
+# Datadog Agent — Host Configuration for Kloudfuse
+#
+# Install the agent on the host first (see README.md), then replace this file at:
+#   /etc/datadog-agent/datadog.yaml
+#
+# Replace <kloudfuse-hostname> before applying.
+
+# ---- Core ----
+api_key: kloudfuse
+dd_url: "https://<kloudfuse-hostname>/ingester"
+
+use_v2_api:
+  series: true
+
+# ---- Logs ----
+logs_enabled: true
+
+logs_config:
+  logs_dd_url: "<kloudfuse-hostname>:443"
+  logs_no_ssl: false
+  force_use_http: true
+  use_compression: true
+  use_v2_api: false
+
+# ---- Events ----
+collect_events: true
+
+process_config:
+  events_dd_url: "https://<kloudfuse-hostname>/ingester"
+
+# ---- Traces (APM) ----
+apm_config:
+  enabled: true
+  apm_dd_url: "<kloudfuse-hostname>:443/ingester"
+
+# ---- OTel receiver — accepts OTLP from the demo pod via hostNetwork ----
+# The demo pod sends to http://localhost:4318 (OTLP HTTP).
+otlp_config:
+  receiver:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+# ---- Host metadata ----
+metadata_providers:
+  - name: host
+    interval: 300
