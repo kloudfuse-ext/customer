@@ -19,7 +19,7 @@ spec:
           [{
             "hosts": ["%%host%%:27017"],
             "username": "kfmon",
-            "password": "kfmonpass",
+            "password": "<password>",
             "database": "admin",
             "tags": ["env:dev", "service:kfuse-mongodb"]
           }]

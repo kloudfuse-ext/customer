@@ -21,7 +21,7 @@ It was created with minimal permissions:
 use admin
 db.createUser({
   user: "kfmon",
-  pwd: "kfmonpass",
+  pwd: "<password>",
   roles: [
     { role: "clusterMonitor", db: "admin" },
     { role: "read", db: "local" }
@@ -60,7 +60,7 @@ kubectl apply -f ../mongodb-manifest.yaml
 kubectl create namespace otel 2>/dev/null || true
 
 kubectl create secret generic otel-mongodb-credentials \
-  --from-literal=password='kfmonpass' \
+  --from-literal=password='<password>' \
   -n otel
 
 # 3. Deploy the collector

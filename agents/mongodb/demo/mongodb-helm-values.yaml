@@ -24,7 +24,7 @@ auth:
   usernames:
     - kfmon
   passwords:
-    - kfmonpass
+    - <password>
   databases:
     - admin
 
@@ -36,7 +36,7 @@ initdbScripts:
     try {
       db.createUser({
         user: "kfmon",
-        pwd: "kfmonpass",
+        pwd: "<password>",
         roles: [
           { role: "clusterMonitor", db: "admin" },
           { role: "read", db: "local" }

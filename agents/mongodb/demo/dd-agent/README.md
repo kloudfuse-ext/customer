@@ -19,7 +19,7 @@ It was created with minimal permissions:
 use admin
 db.createUser({
   user: "kfmon",
-  pwd: "kfmonpass",
+  pwd: "<password>",
   roles: [
     { role: "clusterMonitor", db: "admin" },
     { role: "read", db: "local" }
