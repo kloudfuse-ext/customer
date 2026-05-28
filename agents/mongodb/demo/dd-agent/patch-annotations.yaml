@@ -1,0 +1,27 @@
+# Autodiscovery annotations patch for a MongoDB pod
+#
+# Adds Datadog Autodiscovery annotations to the MongoDB StatefulSet so the
+# Datadog Agent running on the same node discovers and monitors it automatically.
+#
+# The container name inside the pod is "mongodb" — verify with:
+#   kubectl get pod <mongodb-pod> -n <namespace> -o jsonpath='{.spec.containers[*].name}'
+#
+# Apply:
+#   kubectl patch statefulset kfuse-mongodb -n steve --patch-file patch-annotations.yaml
+#   kubectl rollout restart statefulset/kfuse-mongodb -n steve
+spec:
+  template:
+    metadata:
+      annotations:
+        ad.datadoghq.com/mongodb.check_names: '["mongo"]'
+        ad.datadoghq.com/mongodb.init_configs: '[{}]'
+        ad.datadoghq.com/mongodb.instances: >-
+          [{
+            "hosts": ["%%host%%:27017"],
+            "username": "kfmon",
+            "password": "<password>",
+            "database": "admin",
+            "tags": ["env:dev", "service:kfuse-mongodb"]
+          }]
+        ad.datadoghq.com/mongodb.logs: >-
+          [{"source": "mongodb", "service": "kfuse-mongodb"}]

@@ -1,0 +1,64 @@
+# Datadog Agent — Metrics → Kloudfuse
+#
+# Deploys the Datadog Agent as a Kubernetes DaemonSet using the datadog/datadog Helm chart.
+# Collects Kubernetes metrics (kube-state-metrics, kubelet, node) and scrapes Prometheus
+# endpoints via Autodiscovery. Forwards metrics to Kloudfuse.
+#
+# Prerequisites:
+#   helm repo add datadog https://helm.datadoghq.com && helm repo update
+#
+# Deploy:
+#   helm upgrade --install datadog-metrics datadog/datadog \
+#     --version 3.65.0 \
+#     -f helm-values.yaml \
+#     --namespace datadog-agent \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> (omit Kf-Api-Key lines if auth is not enabled).
+
+datadog:
+  apiKey: "kloudfuse"
+  dd_url: "https://<kloudfuse-hostname>/ingester"
+
+  # Kubernetes infrastructure metrics
+  kubeStateMetricsEnabled: false    # disable legacy check; core check below handles it
+  kubeStateMetricsCore:
+    enabled: true
+    ignoreLegacyKSMCheck: true
+
+  # Prometheus endpoint autodiscovery — scrapes pods annotated with prometheus.io/scrape
+  prometheusScrape:
+    enabled: true
+    version: 1
+
+  # Disable unused features
+  logs:
+    enabled: false
+  apm:
+    enabled: false
+  processAgent:
+    enabled: false
+  orchestratorExplorer:
+    enabled: false
+
+clusterAgent:
+  enabled: true
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+  datadog_cluster_yaml:
+    use_v2_api:
+      series: true
+
+agents:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+  useConfigMap: true
+  customAgentConfig:
+    use_v2_api:
+      series: true

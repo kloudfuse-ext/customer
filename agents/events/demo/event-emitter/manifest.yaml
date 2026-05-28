@@ -1,0 +1,159 @@
+---
+# Kubernetes Events Emitter Demo
+# Image:     python:3.12-slim (Docker Hub) — pip-installs kubernetes SDK and runs an event loop inline.
+# Emits:     one Kubernetes Event per second to the same namespace — alternates Normal/Warning types.
+# Events:    visible via `kubectl get events -n <namespace>` and collected by dd-agent / otel.
+#
+# Deploy order:
+#   1. kubectl apply -f manifest.yaml
+#   2. Confirm events: kubectl get events -n <namespace> --field-selector involvedObject.name=events-demo
+#
+# NOTE: first startup takes ~20 s while pip installs the kubernetes client.
+#       Subsequent restarts reuse the pip cache in /pip-cache (emptyDir).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: events-demo-sa
+  namespace: steve
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: events-demo-role
+  namespace: steve
+rules:
+  - apiGroups: ["", "events.k8s.io"]
+    resources: [events]
+    verbs: [create, patch, update]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: events-demo-rb
+  namespace: steve
+subjects:
+  - kind: ServiceAccount
+    name: events-demo-sa
+    namespace: steve
+roleRef:
+  kind: Role
+  name: events-demo-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: events-demo
+  namespace: steve
+  labels:
+    app: events-demo
+spec:
+  serviceAccountName: events-demo-sa
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: pip-cache
+      emptyDir: {}
+
+  containers:
+    - name: event-emitter
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+
+          pip install --quiet --cache-dir /pip-cache kubernetes
+
+          cat > /emitter.py << 'PYCODE'
+          import os
+          import time
+          import datetime
+          import socket
+          from kubernetes import client, config
+          from kubernetes.client.rest import ApiException
+
+          config.load_incluster_config()
+          events_api = client.EventsV1Api()
+
+          namespace = os.environ["POD_NAMESPACE"]
+          pod_name  = os.environ["POD_NAME"]
+          host      = socket.gethostname()
+
+          reasons = [
+              ("DemoHeartbeat",  "Normal",  "Demo event emitter heartbeat — cluster events pipeline is active"),
+              ("DemoWarning",    "Warning", "Demo synthetic warning — validating Warning-type event ingestion"),
+              ("DemoInfo",       "Normal",  "Demo informational event — service health check passed"),
+          ]
+
+          print(f"events-demo starting event loop (1 event/second) on pod {pod_name}", flush=True)
+          counter = 0
+
+          while True:
+              reason, etype, message = reasons[counter % len(reasons)]
+              now = datetime.datetime.now(datetime.timezone.utc)
+              event_name = f"events-demo.{counter:08d}"
+
+              body = client.EventsV1Event(
+                  metadata=client.V1ObjectMeta(
+                      name=event_name,
+                      namespace=namespace,
+                  ),
+                  event_time=now,
+                  action="Emitting",
+                  reason=reason,
+                  note=message,
+                  type=etype,
+                  regarding=client.V1ObjectReference(
+                      api_version="v1",
+                      kind="Pod",
+                      name=pod_name,
+                      namespace=namespace,
+                  ),
+                  reporting_controller="events-demo",
+                  reporting_instance=host,
+              )
+
+              try:
+                  events_api.create_namespaced_event(namespace=namespace, body=body)
+                  print(f"[{now.strftime('%Y-%m-%dT%H:%M:%SZ')}] {etype}/{reason}: {message}", flush=True)
+              except ApiException as e:
+                  print(f"ERROR creating event: {e}", flush=True)
+
+              counter += 1
+              time.sleep(1)
+          PYCODE
+
+          exec python /emitter.py
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumeMounts:
+        - name: pip-cache
+          mountPath: /pip-cache
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "256Mi"

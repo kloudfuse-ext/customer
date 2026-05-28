@@ -1,0 +1,28 @@
+# Autodiscovery annotations patch for kfuse-configdb
+#
+# Adds Datadog Autodiscovery annotations to the kfuse-configdb StatefulSet so the
+# Datadog Agent running on the same node discovers and monitors it automatically.
+#
+# The container name inside the pod is "postgresql" (Bitnami convention) — verify with:
+#   kubectl get pod kfuse-configdb-0 -n steve -o jsonpath='{.spec.containers[*].name}'
+#
+# Apply:
+#   kubectl patch statefulset kfuse-configdb -n steve --patch-file patch-annotations.yaml
+#
+# Replace <password> with the kfmon user password before applying.
+spec:
+  template:
+    metadata:
+      annotations:
+        ad.datadoghq.com/postgresql.check_names: '["postgres"]'
+        ad.datadoghq.com/postgresql.init_configs: '[{}]'
+        ad.datadoghq.com/postgresql.instances: >-
+          [{
+            "host": "%%host%%",
+            "port": 5432,
+            "username": "kfmon",
+            "password": "<password>",
+            "tags": ["env:dev", "service:kfuse-configdb"]
+          }]
+        ad.datadoghq.com/postgresql.logs: >-
+          [{"source": "postgresql", "service": "kfuse-configdb"}]

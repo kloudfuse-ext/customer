@@ -1,0 +1,92 @@
+---
+# Elastic APM Demo
+# Image:   python:3.12-slim — pip-installs elastic-apm and runs a trace loop inline.
+# Traces:  Elastic APM intake API → https://<KFUSE_CLUSTER_DNS>/ingester
+# Emits:   one transaction/second — "request" transaction with a "db.query" span
+# Service: demo-elastic-service
+#
+# Replace <KFUSE_CLUSTER_DNS> before applying.
+# If auth is not enabled, remove the ELASTIC_APM_SECRET_TOKEN env var.
+#
+# Deploy:
+#   kubectl apply -f manifest.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apm-demo-elastic
+  namespace: steve
+  labels:
+    app: apm-demo-elastic
+    language: python
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "steve"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: pip-cache
+      emptyDir: {}
+
+  containers:
+    - name: elastic-app
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+
+          # ---- install Elastic APM Python agent ----
+          pip install --quiet --cache-dir /pip-cache elastic-apm
+
+          # ---- write trace loop application ----
+          cat > /app.py << 'PYCODE'
+          import time, os
+          import elasticapm
+
+          client = elasticapm.Client(
+              service_name=os.environ.get("ELASTIC_APM_SERVICE_NAME", "demo-elastic-service"),
+              server_url=os.environ["ELASTIC_APM_SERVER_URL"],
+              secret_token=os.environ.get("ELASTIC_APM_SECRET_TOKEN", ""),
+              environment=os.environ.get("ELASTIC_APM_ENVIRONMENT", "dev"),
+              service_version="1.0.0",
+          )
+          elasticapm.instrument()
+
+          print("demo-elastic-service starting trace loop (1 transaction/second)", flush=True)
+
+          while True:
+              client.begin_transaction("request")
+              with elasticapm.capture_span("db.query", span_type="db", span_subtype="postgresql"):
+                  time.sleep(0.05)
+              client.end_transaction("GET /demo", "200")
+              time.sleep(1)
+          PYCODE
+
+          exec python /app.py
+      env:
+        - name: ELASTIC_APM_SERVICE_NAME
+          value: "demo-elastic-service"
+        # ELASTIC_APM_SERVER_URL must point to the Kloudfuse ingester root — the agent
+        # appends /intake/v2/events automatically. Do NOT include the path in the URL.
+        - name: ELASTIC_APM_SERVER_URL
+          value: "https://<KFUSE_CLUSTER_DNS>/ingester"
+        - name: ELASTIC_APM_SECRET_TOKEN   # omit if auth is not enabled
+          valueFrom:
+            secretKeyRef:
+              name: kloudfuse-api-key
+              key: value
+        - name: ELASTIC_APM_ENVIRONMENT
+          value: "dev"
+      volumeMounts:
+        - name: pip-cache
+          mountPath: /pip-cache
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"

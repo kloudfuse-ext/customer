@@ -1,0 +1,131 @@
+# MongoDB — standalone StatefulSet in the steve namespace
+#
+# Uses the official mongo:7.0 image (Docker Hub, no paywall).
+# Creates a kfmon monitoring user via initdbScripts mounted as a ConfigMap.
+#
+# Deploy:
+#   kubectl apply -f mongodb-manifest.yaml
+#
+# Connection (in-cluster):
+#   kfuse-mongodb.steve.svc.cluster.local:27017
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kfuse-mongodb-secret
+  namespace: steve
+type: Opaque
+stringData:
+  MONGO_INITDB_ROOT_USERNAME: root
+  MONGO_INITDB_ROOT_PASSWORD: kfuseroot
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kfuse-mongodb-init
+  namespace: steve
+data:
+  create-monitor-user.js: |
+    db = db.getSiblingDB("admin");
+    try {
+      db.createUser({
+        user: "kfmon",
+        pwd: "<password>",
+        roles: [
+          { role: "clusterMonitor", db: "admin" },
+          { role: "read", db: "local" }
+        ]
+      });
+      print("kfmon user created successfully");
+    } catch(e) {
+      print("kfmon user already exists or error: " + e);
+    }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kfuse-mongodb
+  namespace: steve
+  labels:
+    app: kfuse-mongodb
+spec:
+  type: ClusterIP
+  ports:
+    - port: 27017
+      targetPort: 27017
+      name: mongodb
+  selector:
+    app: kfuse-mongodb
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kfuse-mongodb
+  namespace: steve
+  labels:
+    app: kfuse-mongodb
+spec:
+  serviceName: kfuse-mongodb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kfuse-mongodb
+  template:
+    metadata:
+      labels:
+        app: kfuse-mongodb
+    spec:
+      nodeSelector:
+        owner: steve
+      tolerations:
+        - key: "owner"
+          operator: "Equal"
+          value: "steve"
+          effect: "NoSchedule"
+        - key: "node.kubernetes.io/memory-pressure"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - name: mongodb
+          image: mongo:7.0
+          ports:
+            - containerPort: 27017
+          envFrom:
+            - secretRef:
+                name: kfuse-mongodb-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: kfuse-mongodb-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 8Gi

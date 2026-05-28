@@ -1,0 +1,64 @@
+# OTel Collector — Container Logs → Kloudfuse
+#
+# Deploys the OTel Collector Contrib as a DaemonSet to collect container logs from
+# /var/log/pods/ on each node and forward them to Kloudfuse.
+#
+# NOTE: For logs collection, deploy as a DaemonSet (one collector per node).
+#       This is the opposite of the events demo which requires a Deployment.
+#
+# Prerequisites:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#
+# Deploy:
+#   helm upgrade --install otel-logs open-telemetry/opentelemetry-collector \
+#     -f helm-values.yaml \
+#     --namespace otel \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit Kf-Api-Key if auth is not enabled).
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+mode: daemonset
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "steve"
+    effect: "NoSchedule"
+
+# Enable log collection from container log files on each node
+presets:
+  logsCollection:
+    enabled: true
+    includeCollectorLogs: false
+  kubernetesAttributes:
+    enabled: true
+
+config:
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp:
+      tls:
+        insecure: true          # remove if using https
+      logs_endpoint: https://<kloudfuse-hostname>/ingester/otlp/v1/logs
+      headers:
+        Kf-Api-Key: <token>     # omit if auth is not enabled
+
+  processors:
+    batch:
+      timeout: 10s
+    resourcedetection:
+      detectors: [env, gcp, eks, ec2, aks, azure]
+      override: false
+      timeout: 2s
+
+  service:
+    pipelines:
+      logs:
+        receivers: [filelog]
+        processors: [k8sattributes, resourcedetection, batch]
+        exporters: [otlphttp]
