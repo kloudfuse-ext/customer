@@ -10,7 +10,15 @@ X-Disable-Provenance: true to strip it.
 
 Auth is handled via X-Auth-Request-* headers that the platform proxy
 normally sets.  When running locally or via port-forward, the script sets
-these headers directly.
+these headers directly.  Alternatively, pass --token to authenticate with a
+Grafana service account token (Authorization: Bearer).
+
+Rule groups whose name contains a '/' cannot be updated through the platform
+proxy: Grafana's /grafana sub-path rewrite decodes the encoded slash before
+routing, so the group splits into an extra path segment and Grafana returns
+404.  For those, point --url straight at the Grafana service and pass
+--grafana-direct (typically with --token), which addresses the root API where
+the encoded slash survives into the {group} path segment.
 """
 
 import argparse
@@ -70,13 +78,34 @@ def parse_args():
     )
     parser.add_argument(
         "--username",
-        required=True,
-        help="Username for X-Auth-Request-User header",
+        default=None,
+        help="Username for X-Auth-Request-User header (not needed with --token)",
     )
     parser.add_argument(
         "--email",
-        required=True,
-        help="Email for X-Auth-Request-Email header (used for audit logging)",
+        default=None,
+        help="Email for X-Auth-Request-Email header / audit logging (optional with --token)",
+    )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help=(
+            "Grafana service account token. When set, requests authenticate via "
+            "'Authorization: Bearer <token>' and the X-Auth-Request-* headers are "
+            "not sent, making --username/--email optional."
+        ),
+    )
+    parser.add_argument(
+        "--grafana-direct",
+        action="store_true",
+        help=(
+            "Treat --url as pointing straight at the Grafana service "
+            "(e.g. kubectl port-forward svc/kfuse-grafana 13000:80 --> "
+            "--url http://localhost:13000). Addresses the root Grafana API and "
+            "omits the /grafana sub-path prefix. Required to update rule groups "
+            "whose name contains a '/': the sub-path rewrite decodes the encoded "
+            "slash before routing (404), whereas the root API preserves it."
+        ),
     )
     parser.add_argument(
         "--folder",
@@ -103,6 +132,11 @@ def parse_args():
         ),
     )
     args = parser.parse_args()
+    if not args.token and not (args.username and args.email):
+        parser.error(
+            "provide --token, or both --username and --email "
+            "(proxy-header auth needs a user and email)"
+        )
     if args.group and not args.folder:
         parser.error("--group requires --folder")
     if args.include_non_kloudfuse and not (args.folder and args.group):
@@ -113,9 +147,9 @@ def parse_args():
     return args
 
 
-def check_grafana_reachable(session, base_url):
-    """Verify Grafana is running and reachable via the platform. Exit with error if not."""
-    url = f"{base_url}/grafana/api/health"
+def check_grafana_reachable(session, api_base):
+    """Verify Grafana is running and reachable. Exit with error if not."""
+    url = f"{api_base}/api/health"
     try:
         resp = session.get(url, timeout=10)
         if resp.status_code != 200:
@@ -138,9 +172,9 @@ def make_request(session, method, url, summary, **kwargs):
     return resp
 
 
-def fetch_all_rules(session, base_url, summary):
+def fetch_all_rules(session, api_base, summary):
     """Fetch all alert rules via the Ruler API."""
-    url = f"{base_url}/grafana/api/ruler/grafana/api/v1/rules?subtype=cortex"
+    url = f"{api_base}/api/ruler/grafana/api/v1/rules?subtype=cortex"
     headers = {"X-Kloudfuse-Enrich-Alert": "false"}
     resp = make_request(session, "GET", url, summary, headers=headers)
     if resp.status_code != 200:
@@ -190,25 +224,29 @@ def get_folder_uid_from_group(rules):
     return ""
 
 
-def fetch_provisioning_rule_group(session, base_url, folder_uid, group_name, summary):
+def fetch_provisioning_rule_group(session, api_base, folder_uid, group_name, summary):
     """Fetch a rule group via the provisioning API."""
     encoded_group = urllib.parse.quote(group_name, safe="")
-    url = f"{base_url}/grafana/api/v1/provisioning/folder/{folder_uid}/rule-groups/{encoded_group}"
+    url = f"{api_base}/api/v1/provisioning/folder/{folder_uid}/rule-groups/{encoded_group}"
     resp = make_request(session, "GET", url, summary)
     if resp.status_code != 200:
         return None, f"GET failed: {resp.status_code} {resp.text}"
     return resp.json(), None
 
 
-def put_provisioning_rule_group(session, base_url, folder_uid, group_name, body, summary):
+def put_provisioning_rule_group(session, api_base, folder_uid, group_name, body, summary, direct_grafana=False):
     """PUT a rule group via the provisioning API with X-Disable-Provenance."""
     encoded_group = urllib.parse.quote(group_name, safe="")
-    url = f"{base_url}/grafana/api/v1/provisioning/folder/{folder_uid}/rule-groups/{encoded_group}"
+    url = f"{api_base}/api/v1/provisioning/folder/{folder_uid}/rule-groups/{encoded_group}"
     headers = {
         "Content-Type": "application/json",
         "X-Disable-Provenance": "true",
-        "X-Kloudfuse-Passthrough-Rule-Group": "true",
     }
+    if not direct_grafana:
+        # Tells user-mgmt-service to forward the PUT straight to Grafana's
+        # provisioning API instead of doing ruler conversion. Meaningless when
+        # talking to Grafana directly.
+        headers["X-Kloudfuse-Passthrough-Rule-Group"] = "true"
     resp = make_request(session, "PUT", url, summary, headers=headers, json=body)
     if resp.status_code >= 300:
         return False, f"PUT failed: {resp.status_code} {resp.text}"
@@ -275,15 +313,37 @@ def main():
 
     base_url = args.url.rstrip("/")
 
-    session = requests.Session()
-    session.headers["X-Auth-Request-User"] = args.username
-    session.headers["X-Auth-Request-Email"] = args.email
-    session.headers["X-Auth-Request-Role"] = "Admin"
-    session.headers["X-Auth-Request-Auth-Type"] = "basic"
+    # Grafana serves its API under the /grafana sub-path through the platform
+    # proxy, but at the root when hit directly. The sub-path rewrite also decodes
+    # %2F in the path before routing, which breaks rule-group names containing a
+    # '/'. So --grafana-direct must omit the prefix and address the root API,
+    # where the encoded slash survives into the {group} path segment.
+    api_base = base_url if args.grafana_direct else f"{base_url}/grafana"
 
-    print(f"Platform URL: {base_url}")
-    print(f"Auth user:    {args.username}")
-    print(f"Auth email:   {args.email}")
+    session = requests.Session()
+    if args.token:
+        # Grafana service account token — validated natively by Grafana,
+        # independent of auth.proxy header trust (and so unaffected by any
+        # auth.proxy.whitelist). user-mgmt-service also forwards a Bearer token
+        # verbatim, so this works whether direct or proxied.
+        session.headers["Authorization"] = f"Bearer {args.token}"
+    else:
+        # auth.proxy header trust: Grafana (header_name x-auth-request-user,
+        # no whitelist in the default chart) and the platform proxy both honor
+        # these headers.
+        session.headers["X-Auth-Request-User"] = args.username
+        session.headers["X-Auth-Request-Email"] = args.email
+        session.headers["X-Auth-Request-Role"] = "Admin"
+        session.headers["X-Auth-Request-Auth-Type"] = "basic"
+
+    print(f"{'Grafana URL' if args.grafana_direct else 'Platform URL'}:  {base_url}")
+    if args.token:
+        print("Auth:         Grafana service account token")
+        if args.email:
+            print(f"Audit email:  {args.email}")
+    else:
+        print(f"Auth user:    {args.username}")
+        print(f"Auth email:   {args.email}")
     if args.folder:
         print(f"Filter folder: {args.folder}")
     if args.group:
@@ -294,12 +354,27 @@ def main():
         print("Mode:         DRY RUN (no changes will be made)")
     print()
 
+    # Warn about the two common misconfigurations for slashed group names.
+    if args.token and not args.grafana_direct:
+        print(
+            "WARNING: --token without --grafana-direct still routes through the "
+            "platform proxy, which collapses encoded slashes in group names. "
+            "Point --url at Grafana and add --grafana-direct for groups with '/'.\n"
+        )
+    if args.grafana_direct and not args.token:
+        print(
+            "WARNING: --grafana-direct without --token relies on Grafana's "
+            "auth.proxy trusting X-Auth-Request-User. If the deployment sets "
+            "auth.proxy.whitelist, an off-cluster source IP is rejected; use "
+            "--token or run from inside the cluster.\n"
+        )
+
     # Step 0: Verify Grafana is reachable
-    check_grafana_reachable(session, base_url)
+    check_grafana_reachable(session, api_base)
 
     # Step 1: Fetch all rules via Ruler API
     print("Fetching all alert rules via Ruler API...")
-    all_rules = fetch_all_rules(session, base_url, summary)
+    all_rules = fetch_all_rules(session, api_base, summary)
 
     print(f"Found {len(all_rules)} folder(s)\n")
 
@@ -372,7 +447,7 @@ def main():
             # Step 3: Fetch the group via provisioning API
             print(f"Processing: folder={folder_name}, group={group_name}...")
             prov_group, err = fetch_provisioning_rule_group(
-                session, base_url, folder_uid, group_name, summary
+                session, api_base, folder_uid, group_name, summary
             )
             if err:
                 print(f"  ERROR fetching group: {err}")
@@ -383,7 +458,8 @@ def main():
 
             # Step 4: PUT back with X-Disable-Provenance: true
             ok, err = put_provisioning_rule_group(
-                session, base_url, folder_uid, group_name, prov_group, summary
+                session, api_base, folder_uid, group_name, prov_group, summary,
+                direct_grafana=args.grafana_direct,
             )
             if not ok:
                 print(f"  ERROR updating group: {err}")
