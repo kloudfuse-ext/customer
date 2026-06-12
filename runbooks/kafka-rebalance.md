@@ -83,12 +83,12 @@ cat > /bitnami/kafka/topics.json
     { "topic": "kf_events_topic" },
     { "topic": "kf_logs_metric_topic" },
     { "topic": "kf_logs_topic" },
-    { "topic": "logs_ingest_topic" }
+    { "topic": "logs_ingest_topic" },
     { "topic": "kf_metrics_topic" },
     { "topic": "kf_metrics_rollup_topic" },
     { "topic": "kf_traces_errors_topic" },
     { "topic": "kf_traces_metric_topic" },
-    { "topic": "kf_traces_topic" },
+    { "topic": "kf_traces_topic" }
   ]
 }
 ```
@@ -192,4 +192,4 @@ Re-run the above command to check the status of reassignment. This will provide 
 
 ## 🧠 Wrapping Up
 
-Adding Kafka brokers is just step one. Without rebalancing, you won’t get the performance boost or reliability benefits of a bigger cluster. Use the steps above to do it right and ensure your cluster is balanced and efficient.:1
+Adding Kafka brokers is just step one. Without rebalancing, you won’t get the performance boost or reliability benefits of a bigger cluster. Use the steps above to do it right and ensure your cluster is balanced and efficient.

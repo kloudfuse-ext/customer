@@ -23,3 +23,15 @@ This change applies to the following topics:
 - `kf_traces_topic`
 - `kf_traces_errors_topic`
 - `kf_events_topic`
+
+### Size the Kafka broker disk for the added partitions
+
+Adding partitions for a custom retention class increases the total disk required on the kafka-kraft brokers. Size the broker disk using:
+
+> `diskSpace = numberOfPartitions * replicationFactor * 10GB`
+
+where 10GB is the default per-partition retention (`kafka.logRetentionBytes`). Update `kafka-kraft.broker.persistence.size` in the customer values yaml to match the new partition count before applying the change.
+
+### Rebalance after increasing partitions
+
+After the partition count is increased, run a [kafka rebalance](kafka-rebalance.md) so the new partitions are evenly distributed across all brokers.
