@@ -22,10 +22,14 @@ To add additional nodes follow the steps below:
 - [ ] Review and validate if the existing customer values yaml file is correctly configured and up-to-date wrt actual kloudfuse installation. This is important if are changes made directly on the kloudfuse cluster that are not reflected in the customer values yaml. For example, if PVC is resized on the kloudfuse cluster, values yaml file might not have been updated.
 - [ ] Adjust the customer values yaml file by:
     * increasing the replica for each of the services by the right amount.
-        * for zookeeper (kafka zookeeper and pinot zookeeper) keep the number of replicas to 3.
+        * Kafka runs in KRaft mode (there is no Kafka ZooKeeper). It is deployed as two StatefulSets:
+            * `kafka-kraft-controller` - keep at 3 replicas. These hold the KRaft metadata quorum (odd replica count) and must not be scaled out with the cluster.
+            * `kafka-kraft-broker` - scale these out with the cluster to add ingest and storage capacity.
+        * for `pinot-zookeeper` keep the number of replicas to 3. This is the only remaining ZooKeeper (used by Pinot) and must not be scaled.
         * for some services such as, kfuse-redis, kfuse-configdb, kfuse-grafana, etc. keep the number of replicas at 1 as these services do not need to be scaled.
         * for all other services increase the number of replicas by appropriate ratio. So, if there were n nodes and m new nodes are being added, the replicas should be scaled up `(n + m) / n` factor.
     * Increase the number of partitions based on the increased volume as well as expected increase in the volume. Each of the streams such as, logs, metrics, APM have their specific topics for ingest, tranformers as well as for pinot. They all need to be increased in the right proportion.
+        * When increasing partitions, size the kafka-kraft broker disk accordingly using `diskSpace = numberOfPartitions * replicationFactor * 10GB` (the default per-partition retention is 10GB, set by `kafka.logRetentionBytes`). Set `kafka-kraft.broker.persistence.size` in the customer values yaml to match.
     * Get the customer value yaml file reviewed by the CS as well as engineering team.
     
 ### Execution      

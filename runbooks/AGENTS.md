@@ -4,7 +4,7 @@ This file provides guidance for AI agents working in this repository.
 
 ## Repository Purpose
 
-This repository contains operational runbooks and scripts for managing and troubleshooting the Kloudfuse observability stack. The stack runs on Kubernetes and includes Apache Pinot, Kafka, ZooKeeper, PostgreSQL, Grafana, and the Kloudfuse agents.
+This repository contains operational runbooks and scripts for managing and troubleshooting the Kloudfuse observability stack. The stack runs on Kubernetes and includes Apache Pinot, Kafka (KRaft mode — `kafka-kraft-broker` + `kafka-kraft-controller`, no Kafka ZooKeeper), ZooKeeper (used by Pinot only, as `pinot-zookeeper`), PostgreSQL, Grafana, and the Kloudfuse agents.
 
 **GitHub:** https://github.com/kloudfuse/customer
 
