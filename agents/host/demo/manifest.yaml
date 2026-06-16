@@ -1,7 +1,7 @@
 ---
 # Host / VM Demo — Telemetry Emitter Pod
-# Image:   python:3.12-slim (Docker Hub) — pip-installs OTel SDK and emits metrics, logs,
-#          and traces to a local agent (Datadog Agent or OTel Collector) running on the same host.
+# Image:   python:3.12-slim (Docker Hub) — pip-installs OTel SDK and emits metrics, traces,
+#          and logs (via OTLP) to a local agent (Datadog Agent or OTel Collector) on the same host.
 #
 # The pod simulates a workload running on a standalone host or VM (e.g. AWS EC2).
 # It sends all three signal types to localhost, where the local agent collects and
@@ -50,7 +50,8 @@ spec:
 
           pip install --quiet --cache-dir /pip-cache \
             opentelemetry-sdk \
-            opentelemetry-exporter-otlp-proto-http
+            opentelemetry-exporter-otlp-proto-http \
+            opentelemetry-exporter-otlp-proto-grpc
 
           cat > /app.py << 'PYCODE'
           import json
@@ -64,8 +65,11 @@ spec:
           from opentelemetry.sdk.trace.export import BatchSpanProcessor
           from opentelemetry.sdk.metrics import MeterProvider
           from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+          from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+          from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
           from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
           from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+          from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
           from opentelemetry.sdk.resources import Resource
           from opentelemetry.trace import SpanKind
 
@@ -99,16 +103,24 @@ spec:
 
           request_counter   = meter.create_counter("demo_requests_total",   description="Total requests")
           error_counter     = meter.create_counter("demo_errors_total",     description="Total errors")
-          active_gauge      = meter.create_up_down_counter("demo_active_connections", description="Active connections")
           latency_histogram = meter.create_histogram("demo_request_duration_seconds", description="Request duration")
-
-          # --- Logs ---
-          logging.basicConfig(
-              format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "message": %(message)s, "service": "%(name)s"}',
-              datefmt="%Y-%m-%dT%H:%M:%SZ",
-              level=logging.INFO,
+          # ObservableGauge reports the current value on each collection, not a cumulative delta
+          active_connections = 3
+          meter.create_observable_gauge(
+              "demo_active_connections",
+              callbacks=[lambda _: [metrics.observation.Observation(active_connections)]],
+              description="Current number of active connections",
           )
+
+          # --- Logs (OTLP) ---
+          log_provider = LoggerProvider(resource=resource)
+          log_provider.add_log_record_processor(
+              BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{AGENT_ENDPOINT}/v1/logs"))
+          )
+          handler = LoggingHandler(level=logging.DEBUG, logger_provider=log_provider)
+          logging.basicConfig(level=logging.INFO)
           logger = logging.getLogger(SERVICE_NAME)
+          logger.addHandler(handler)
 
           log_records = [
               (logging.INFO,    "request completed",       {"method": "GET",  "path": "/api/health",  "status": 200, "latency_ms": 12}),
@@ -119,7 +131,6 @@ spec:
 
           print(f"host-demo starting (traces + metrics + logs → {AGENT_ENDPOINT})", flush=True)
           counter = 0
-          active_connections = 3
 
           while True:
               # Emit a trace
@@ -135,9 +146,8 @@ spec:
               latency_histogram.record(0.05, {"route": "/api/health"})
               if counter % 10 == 0:
                   error_counter.add(1, {"route": "/api/data", "status": "503"})
-              active_gauge.add(active_connections)
 
-              # Emit a structured log
+              # Emit a log via OTLP
               level, message, fields = log_records[counter % len(log_records)]
               logger.log(level, json.dumps({"event": message, **fields}))
 

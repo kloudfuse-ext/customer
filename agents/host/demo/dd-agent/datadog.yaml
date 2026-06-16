@@ -31,7 +31,7 @@ process_config:
 # ---- Traces (APM) ----
 apm_config:
   enabled: true
-  apm_dd_url: "<kloudfuse-hostname>:443/ingester"
+  apm_dd_url: "https://<kloudfuse-hostname>:443/ingester"
 
 # ---- OTel receiver — accepts OTLP from the demo pod via hostNetwork ----
 # The demo pod sends to http://localhost:4318 (OTLP HTTP).
@@ -39,9 +39,9 @@ otlp_config:
   receiver:
     protocols:
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 127.0.0.1:4318
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: 127.0.0.1:4317
 
 # ---- Host metadata ----
 metadata_providers:
