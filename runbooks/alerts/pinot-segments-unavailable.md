@@ -60,6 +60,7 @@ QueryException: Encountered errors when executing the query...
 |--------|--------------|-----------------|
 | `pinot_controller_percentSegmentsAvailable_Value` | `100` | `< 90` |
 | `pinot_controller_segmentsInErrorState_Value` | `0` | `> 0` |
+| `pinot_controller_segmentsInUpdatingState_Value` | low/transient | persistently high (thousands stuck means segments cannot commit or load) |
 | `pinot_controller_validation_missingSegmentCount_Value` | `0` | `> 0` |
 
 ### Alert Expression
@@ -129,16 +130,16 @@ Identify which server is reporting errors by searching Pinot server logs in Klou
 Set the time range to cover when the alert fired, then run the following FuseQL query:
 
 ```
-kube_service="pinot-server" and level=~"warn|error" 
+source="pinot-server" and level=~"warn|error" 
 ```
 
 To narrow down to segment-specific failures:
 
 ```
-kube_service="pinot-server" and ("Failed to load" or "Failed to download" or "Cannot find" or "unavailable")
+source="pinot-server" and ("Failed to load" or "Failed to download" or "Cannot find" or "unavailable")
 ```
 
-Review the results grouped by `kube_pod` to identify which server instance is generating the errors.
+Review the results grouped by `pod_name` to identify which server instance is generating the errors.
 
 Common error patterns to look for:
 
@@ -251,6 +252,31 @@ kubectl delete pod -n kfuse <SERVER_POD_NAME>
 kubectl wait --for=condition=Ready pod/<SERVER_POD_NAME> -n kfuse --timeout=600s
 ```
 
+### Case E: REALTIME Segments Stuck in UPDATING State Due to Deep Store Upload Failure
+
+If `pinot_controller_segmentsInUpdatingState_Value` is high (thousands) and `percentSegmentsAvailable` is low but `segmentsInErrorState` is 0, REALTIME segments are failing to commit to deep store. When a REALTIME segment finishes consuming from Kafka, the server must upload it to deep store before the controller can mark it ONLINE. If the upload fails, the segment stays in an intermediate state and the controller reports it as unavailable.
+
+Check for S3 upload errors in Kloudfuse:
+
+**Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
+
+```
+source="pinot-server" and "Failed to upload" and "s3://"
+```
+
+or for GCS:
+
+```
+source="pinot-server" and "Failed to upload" and "gs://"
+```
+
+If you see repeated `Failed to upload file ... to s3://` errors, the cause is deep store connectivity or permissions. This will cause:
+- `percentSegmentsAvailable` to remain persistently low (only the already-committed segments are available)
+- `segmentsInUpdatingState` to grow or remain stable at a large number
+- Query timeouts on REALTIME tables as servers become overloaded with upload retries
+
+**Resolution:** Fix the deep store connectivity or IAM permissions (see Case B above). Once S3 is accessible, in-progress upload retries should succeed and segments will complete their commit and become ONLINE. Monitor `segmentsInUpdatingState` dropping toward 0.
+
 ### Case D: Segment Corrupted or Missing from Deep Store
 
 If a segment is missing from deep store and was not replicated, it may not be recoverable. However, for REALTIME tables, Pinot can rebuild segments from Kafka if offset retention permits.
@@ -327,7 +353,21 @@ A healthy result shows all segments `ONLINE`, `numServersQueried` matching `numS
 ### Monitor Segment Error Count
 
 ```promql
-pinot_controller_numSegmentsWithError{org_id="<ORG_ID>"} > 0
+pinot_controller_segmentsInErrorState_Value{
+  kfuse="true",
+  table=~"kf_logs|kf_metrics|kf_metrics_rollup"
+} > 0
+```
+
+### Monitor Segments Stuck in Updating State
+
+A persistently high `segmentsInUpdatingState` (thousands for minutes or longer) indicates segments that cannot complete their commit — typically due to deep store (S3/GCS) upload failures. Check for `S3PinotFS` or `GCSPinotFS` errors in pinot-server logs:
+
+```promql
+pinot_controller_segmentsInUpdatingState_Value{
+  kfuse="true",
+  table=~"kf_logs|kf_metrics|kf_metrics_rollup"
+} > 100
 ```
 
 ### Monitor Server Restarts
