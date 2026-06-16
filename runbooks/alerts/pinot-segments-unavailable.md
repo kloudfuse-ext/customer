@@ -185,7 +185,7 @@ Check if segments are actively loading in Kloudfuse.
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
 ```
-kube_pod*~"pinot-server" and ("Downloading" or "Loading segment" or "Loaded segment")
+source="pinot-server" and ("Downloading" or "Loading segment" or "Loaded segment")
 ```
 
 If you see a steady stream of `Loaded segment` messages, the server is still recovering — wait for it to complete.
@@ -207,7 +207,7 @@ If servers cannot download segments from deep store (S3, GCS, Azure), search for
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
 ```
-kube_pod*~"pinot-server" and ("Failed to download" or "Connection refused" or "Access Denied" or "NoSuchKey" or "404")
+source="pinot-server" and ("Failed to download" or "Connection refused" or "Access Denied" or "NoSuchKey" or "404")
 ```
 
 If you see `Access Denied` or `403` errors, check the Pinot server's IAM role or service account credentials.
@@ -305,7 +305,7 @@ The script will prompt for confirmation before resetting. After reset, monitor c
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
 ```
-kube_pod*~"pinot-server" and "<SEGMENT_NAME>"
+source="pinot-server" and "<SEGMENT_NAME>"
 ```
 
 ---

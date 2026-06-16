@@ -53,15 +53,18 @@ When a step requires searching logs, direct the user to **Kloudfuse UI → Logs 
 
 - Filter by deployment: `kube_deployment="query-service"`
 - Filter by statefulset: `kube_stateful_set="pinot-broker"`
-- Filter by pod name: `kube_pod="<POD_NAME>"`
+- Filter by pod name (exact): `pod_name="pinot-server-realtime-0"`
+- Filter by pod name (prefix/regex): `pod_name=~"pinot-server.*"`
+- Filter by source label: `source="pinot-server"` (preferred for component-wide log searches — this is the application-level label set by the log shipper)
 - Filter by service: `kube_service="pinot-server"`
-- Filter by pod prefix: `kube_pod*~"pinot-server"`
-- Filter by level: `level=~"warn|error"` or `__kf_level="ERROR"`
+- Filter by level: `level=~"warn|error"`
 - Keyword search: `("Failed to load" or "Failed to download")`
 - Regex match on multiple values: `kube_stateful_set=~"pinot-server-realtime|pinot-server-offline"`
 - Combine filters: `kube_stateful_set="pinot-broker" and ("QueryException" or "timeout") and level=~"error|warn"`
 
-Use `kube_pod` for logs from a specific pod (e.g., a pod that has already restarted). Use `kube_deployment` or `kube_stateful_set` for component-wide searches.
+**Invalid syntax to avoid:** `kube_pod*~"..."` — this is not valid FuseQL. The `kube_pod` label does not exist; use `pod_name` instead. The `*~` glob operator does not exist; use `=~` with a regex (e.g. `pod_name=~"pinot-server.*"`).
+
+Use `source="<component>"` for component-wide searches. Use `pod_name="<POD_NAME>"` for logs from a specific pod (e.g., a pod that has already restarted).
 
 ### Scripts
 

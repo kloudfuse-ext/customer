@@ -128,13 +128,13 @@ Search Kloudfuse logs for errors on the affected server around the time the aler
 Set the time range to cover when the alert fired, then run:
 
 ```
-kube_pod*~"pinot-server" and kf_node="<NODE_NAME>" and (__kf_level="ERROR" or __kf_level="WARN")
+source="pinot-server" and kf_node="<NODE_NAME>" and level=~"warn|error"
 ```
 
 To narrow to segment-specific failures:
 
 ```
-kube_pod*~"pinot-server" and kf_node="<NODE_NAME>" and ("Failed to load" or "Failed to download" or "segment" or "ERROR")
+source="pinot-server" and kf_node="<NODE_NAME>" and ("Failed to load" or "Failed to download")
 ```
 
 Common error patterns:
@@ -160,7 +160,7 @@ Check if segments are actively loading:
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
 ```
-kube_pod*~"pinot-server" and kf_node="<NODE_NAME>" and ("Downloading" or "Loading segment" or "Loaded segment")
+source="pinot-server" and kf_node="<NODE_NAME>" and ("Downloading" or "Loading segment" or "Loaded segment")
 ```
 
 If you see a steady stream of `Loaded segment` messages, the server is recovering — wait for it to complete and monitor:
@@ -185,7 +185,7 @@ Or use the script:
 Search for download errors:
 
 ```
-kube_pod*~"pinot-server" and kf_node="<NODE_NAME>" and ("Failed to download" or "Access Denied" or "NoSuchKey" or "403" or "404")
+source="pinot-server" and kf_node="<NODE_NAME>" and ("Failed to download" or "Access Denied" or "NoSuchKey" or "403" or "404")
 ```
 
 - `Access Denied` / `403` → check IAM role or service account permissions for the Pinot server
@@ -267,7 +267,7 @@ The script will prompt for confirmation before resetting. After reset, monitor c
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
 ```
-kube_pod*~"pinot-server" and "<SEGMENT_NAME>"
+source="pinot-server" and "<SEGMENT_NAME>"
 ```
 
 ---
