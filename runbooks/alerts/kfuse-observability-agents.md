@@ -148,7 +148,7 @@ Search Kloudfuse for agent errors across all nodes:
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 
 ```
-kf_node="<NODE_NAME>" and kube_pod*~"kfuse-agent" and (__kf_level="ERROR" or __kf_level="WARN")
+kf_node="<NODE_NAME>" and kube_daemon_set="kfuse-agent" and level=~"warn|error"
 ```
 
 ---
