@@ -26,7 +26,7 @@ mode: daemonset
 tolerations:
   - key: "owner"
     operator: "Equal"
-    value: "steve"
+    value: "<NODE_LABEL>"
     effect: "NoSchedule"
 
 # Enable log collection from container log files on each node

@@ -38,8 +38,8 @@ consuming connection slots needed by the application.
 ```bash
 # 1. Add Autodiscovery annotations to kfuse-configdb
 #    Replace <password> in patch-annotations.yaml first, then:
-kubectl patch statefulset kfuse-configdb -n steve --patch-file patch-annotations.yaml
-kubectl rollout restart statefulset/kfuse-configdb -n steve
+kubectl patch statefulset kfuse-configdb -n $NAMESPACE --patch-file patch-annotations.yaml
+kubectl rollout restart statefulset/kfuse-configdb -n $NAMESPACE
 
 # 2. Deploy the Datadog Agent
 helm repo add datadog https://helm.datadoghq.com
@@ -74,6 +74,6 @@ postgresql.rows_fetched{service:kfuse-configdb}
 ```bash
 helm uninstall datadog-postgres -n datadog-agent
 # Optionally remove the annotations patch:
-kubectl patch statefulset kfuse-configdb -n steve --type=json \
+kubectl patch statefulset kfuse-configdb -n $NAMESPACE --type=json \
   -p='[{"op":"remove","path":"/spec/template/metadata/annotations/ad.datadoghq.com~1postgresql.check_names"}]'
 ```

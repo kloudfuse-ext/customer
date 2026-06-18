@@ -17,7 +17,7 @@
 tolerations:
   - key: "owner"
     operator: "Equal"
-    value: "steve"
+    value: "<NODE_LABEL>"
     effect: "NoSchedule"
 
 # Install the kubernetes_metadata filter plugin

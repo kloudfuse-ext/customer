@@ -11,7 +11,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: apm-demo-python
-  namespace: steve
+  namespace: <NAMESPACE>
   labels:
     app: apm-demo-python
     language: python
@@ -20,7 +20,7 @@ spec:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
 
   volumes:

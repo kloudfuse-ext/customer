@@ -19,14 +19,14 @@
 tolerations:
   - key: "owner"
     operator: "Equal"
-    value: "steve"
+    value: "<NODE_LABEL>"
     effect: "NoSchedule"
 
 server:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
 
 serverFiles:
@@ -49,5 +49,5 @@ prometheus-node-exporter:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"

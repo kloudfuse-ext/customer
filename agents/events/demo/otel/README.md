@@ -49,7 +49,7 @@ Query via the Loki API:
 Filter to a specific namespace:
 
 ```logql
-{kf_events_agent="otlp", k8s_namespace_name="steve"}
+{kf_events_agent="otlp", k8s_namespace_name="$NAMESPACE"}
 ```
 
 Events emitted by the `events-demo` pod will appear as log records with the event reason and message in the log body.

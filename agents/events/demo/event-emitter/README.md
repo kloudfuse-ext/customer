@@ -22,7 +22,7 @@ Events are attached to the `events-demo` pod itself and cycle through three type
 ## Prerequisites
 
 - `kubectl` configured against your cluster.
-- The `steve` namespace must exist, or change `namespace:` in `manifest.yaml` to match your environment.
+- The `$NAMESPACE` namespace must exist, or change `namespace:` in `manifest.yaml` to match your environment.
 
 ## Deploy
 
@@ -35,7 +35,7 @@ kubectl apply -f manifest.yaml
 First startup takes ~20 s while `pip install` runs. Watch the logs:
 
 ```bash
-kubectl logs events-demo -n steve -f
+kubectl logs events-demo -n $NAMESPACE -f
 ```
 
 Wait until you see:
@@ -47,7 +47,7 @@ events-demo starting event loop (1 event/second) on pod events-demo
 Confirm events appear in the cluster:
 
 ```bash
-kubectl get events -n steve --field-selector involvedObject.name=events-demo
+kubectl get events -n $NAMESPACE --field-selector involvedObject.name=events-demo
 ```
 
 ## Next steps

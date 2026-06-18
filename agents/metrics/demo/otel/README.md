@@ -45,7 +45,7 @@ demo_errors_total
 Filter by Kubernetes namespace or pod in the Kloudfuse metrics explorer:
 ```
 kf_metrics_agent="otlp"
-kubernetes_namespace="steve"
+kubernetes_namespace="$NAMESPACE"
 kubernetes_pod_name="metrics-demo"
 ```
 

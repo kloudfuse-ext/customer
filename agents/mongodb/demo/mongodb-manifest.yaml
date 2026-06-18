@@ -1,4 +1,4 @@
-# MongoDB — standalone StatefulSet in the steve namespace
+# MongoDB — standalone StatefulSet in the $NAMESPACE namespace
 #
 # Uses the official mongo:7.0 image (Docker Hub, no paywall).
 # Creates a kfmon monitoring user via initdbScripts mounted as a ConfigMap.
@@ -14,7 +14,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: kfuse-mongodb-secret
-  namespace: steve
+  namespace: <NAMESPACE>
 type: Opaque
 stringData:
   MONGO_INITDB_ROOT_USERNAME: root
@@ -25,7 +25,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: kfuse-mongodb-init
-  namespace: steve
+  namespace: <NAMESPACE>
 data:
   create-monitor-user.js: |
     db = db.getSiblingDB("admin");
@@ -48,7 +48,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kfuse-mongodb
-  namespace: steve
+  namespace: <NAMESPACE>
   labels:
     app: kfuse-mongodb
 spec:
@@ -65,7 +65,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: kfuse-mongodb
-  namespace: steve
+  namespace: <NAMESPACE>
   labels:
     app: kfuse-mongodb
 spec:
@@ -80,11 +80,11 @@ spec:
         app: kfuse-mongodb
     spec:
       nodeSelector:
-        owner: steve
+        owner: <NODE_LABEL>
       tolerations:
         - key: "owner"
           operator: "Equal"
-          value: "steve"
+          value: "<NODE_LABEL>"
           effect: "NoSchedule"
         - key: "node.kubernetes.io/memory-pressure"
           operator: "Exists"

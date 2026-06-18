@@ -36,10 +36,10 @@ Metrics from the `metrics-demo` pod arrive with their Prometheus metric names an
 the relabeled `kubernetes_namespace` and `kubernetes_pod_name` labels:
 
 ```
-demo_requests_total{kubernetes_namespace="steve", kubernetes_pod_name="metrics-demo"}
-demo_active_connections{kubernetes_namespace="steve"}
-demo_request_duration_seconds{kubernetes_namespace="steve"}
-demo_errors_total{kubernetes_namespace="steve"}
+demo_requests_total{kubernetes_namespace="$NAMESPACE", kubernetes_pod_name="metrics-demo"}
+demo_active_connections{kubernetes_namespace="$NAMESPACE"}
+demo_request_duration_seconds{kubernetes_namespace="$NAMESPACE"}
+demo_errors_total{kubernetes_namespace="$NAMESPACE"}
 ```
 
 ## Tear down

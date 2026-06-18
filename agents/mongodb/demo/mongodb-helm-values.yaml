@@ -1,12 +1,12 @@
 # MongoDB — Bitnami Helm Chart
 #
-# Deploys a standalone MongoDB instance into the steve namespace on the steve node.
+# Deploys a standalone MongoDB instance into the $NAMESPACE namespace on the <NODE_LABEL> node.
 # Creates a dedicated monitoring user (kfmon) for use by the Datadog Agent and OTel Collector.
 #
 # Deploy:
 #   helm upgrade --install kfuse-mongodb bitnami/mongodb \
 #     -f mongodb-helm-values.yaml \
-#     --namespace steve
+#     --namespace $NAMESPACE
 #
 # Monitoring connection (in-cluster):
 #   <mongodb-service-name>.<namespace>.svc.cluster.local:27017
@@ -60,14 +60,14 @@ persistence:
   enabled: true
   size: 8Gi
 
-# Schedule on steve's node
+# Schedule on <NODE_LABEL> node
 nodeSelector:
-  owner: steve
+  owner: <NODE_LABEL>
 
 tolerations:
   - key: "owner"
     operator: "Equal"
-    value: "steve"
+    value: "<NODE_LABEL>"
     effect: "NoSchedule"
   - key: "node.kubernetes.io/memory-pressure"
     operator: "Exists"

@@ -56,7 +56,7 @@ Events:
   Warning  FailedMount                      4m26s                   kubelet            MountVolume.SetUp failed for volume "kfuse-pinot-events-schema" : failed to sync configmap cache: timed out waiting for the condition
   Normal   Created                          3m39s (x3 over 4m24s)   kubelet            Created container: pinot-add-table-json
   Normal   Started                          3m38s (x3 over 4m24s)   kubelet            Started container pinot-add-table-json
-  Warning  BackOff                          3m14s (x3 over 3m54s)   kubelet            Back-off restarting failed container pinot-add-table-json in pod pinot-events-table-creation-std6v_kfuse-steve-runbook(6e6cdee9-3288-443d-8df4-eecf0559ac04)
+  Warning  BackOff                          3m14s (x3 over 3m54s)   kubelet            Back-off restarting failed container pinot-add-table-json in pod pinot-events-table-creation-std6v_kfuse-sample-runbook(6e6cdee9-3288-443d-8df4-eecf0559ac04)
   Warning  FailedToRetrieveImagePullSecret  2m59s (x10 over 4m25s)  kubelet            Unable to retrieve some image pull secrets (kfuse-image-pull-credentials); attempting to pull the image may not succeed.
   Normal   Pulled                           2m59s (x4 over 4m24s)   kubelet            Container image "us.gcr.io/mvp-demo-301906/pinot:1.3.0-c2f04c5edf" already present on machine
 ```

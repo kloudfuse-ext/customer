@@ -21,7 +21,7 @@ kubectl apply -f manifest.yaml
 ## Verify the endpoint
 
 ```bash
-kubectl port-forward -n steve pod/metrics-demo 8000:8000
+kubectl port-forward -n $NAMESPACE pod/metrics-demo 8000:8000
 curl http://localhost:8000/metrics
 ```
 

@@ -55,7 +55,7 @@ Query via the `/events-query` GraphQL API:
 Events emitted by the `events-demo` pod will appear with:
 - `source: "kubernetes"`
 - `eventType: "kubernetes_apiserver"`
-- `labels` containing `kube_namespace=steve`, `kube_name=events-demo`
+- `labels` containing `kube_namespace=$NAMESPACE`, `kube_name=events-demo`
 - `text` containing the reason (`DemoHeartbeat`, `DemoWarning`, `DemoInfo`)
 
 > **Note:** These events appear in the *Events* store, not in *Logs*. This is different from the OTel path — see [`../otel/`](../otel/).

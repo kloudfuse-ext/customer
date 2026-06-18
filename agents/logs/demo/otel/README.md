@@ -37,7 +37,7 @@ helm upgrade --install otel-logs open-telemetry/opentelemetry-collector \
 Logs are stored in the **Logs store**. Filter by namespace in the Kloudfuse UI:
 
 ```logql
-{k8s_namespace_name="steve"}
+{k8s_namespace_name="$NAMESPACE"}
 ```
 
 Or filter to just the demo pod:
