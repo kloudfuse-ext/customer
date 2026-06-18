@@ -4,10 +4,10 @@
 # Datadog Agent running on the same node discovers and monitors it automatically.
 #
 # The container name inside the pod is "postgresql" (Bitnami convention) — verify with:
-#   kubectl get pod kfuse-configdb-0 -n steve -o jsonpath='{.spec.containers[*].name}'
+#   kubectl get pod kfuse-configdb-0 -n $NAMESPACE -o jsonpath='{.spec.containers[*].name}'
 #
 # Apply:
-#   kubectl patch statefulset kfuse-configdb -n steve --patch-file patch-annotations.yaml
+#   kubectl patch statefulset kfuse-configdb -n $NAMESPACE --patch-file patch-annotations.yaml
 #
 # Replace <password> with the kfmon user password before applying.
 spec:

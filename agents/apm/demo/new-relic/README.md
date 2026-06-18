@@ -18,7 +18,7 @@ forwarded to Kloudfuse via the New Relic collector protocol.
   ```bash
   kubectl create secret generic kloudfuse-api-key \
     --from-literal=value=<token> \
-    -n steve
+    -n $NAMESPACE
   ```
 - If auth is not enabled, remove the `NEW_RELIC_LICENSE_KEY` env var from `manifest.yaml`.
 
@@ -50,5 +50,5 @@ source="apm" service.name="demo-newrelic-service"
 ## Tear down
 
 ```bash
-kubectl delete pod apm-demo-newrelic -n steve
+kubectl delete pod apm-demo-newrelic -n $NAMESPACE
 ```

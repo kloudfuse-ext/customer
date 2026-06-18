@@ -40,7 +40,7 @@ source="fluentd"
 Filter by Kubernetes namespace:
 
 ```
-source="fluentd" namespace="steve"
+source="fluentd" namespace="$NAMESPACE"
 ```
 
 Filter by log level:

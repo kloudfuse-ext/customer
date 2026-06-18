@@ -42,7 +42,7 @@ clusterAgent:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
   datadog_cluster_yaml:
     # Use the v2 Events API so events are forwarded to Kloudfuse
@@ -62,7 +62,7 @@ agents:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
   useConfigMap: true
   customAgentConfig:

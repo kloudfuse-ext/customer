@@ -29,7 +29,7 @@ kubectl apply -f manifest.yaml
 ## Verify logs are being emitted
 
 ```bash
-kubectl logs logs-demo -n steve -f
+kubectl logs logs-demo -n $NAMESPACE -f
 ```
 
 Expected output:
@@ -47,7 +47,7 @@ All agents collect from the same `/var/log/containers/` path on the node:
 | Agent | Store in Kloudfuse | Key filter |
 |-------|--------------------|------------|
 | [`../dd-agent/`](../dd-agent/) | Logs | `source="logs-demo"` |
-| [`../otel/`](../otel/) | Logs | `k8s.namespace.name="steve"` |
+| [`../otel/`](../otel/) | Logs | `k8s.namespace.name="$NAMESPACE"` |
 | [`../filebeat/`](../filebeat/) | Logs | `source="filebeat"` |
 | [`../fluentd/`](../fluentd/) | Logs | `source="fluentd"` |
 | [`../elastic/`](../elastic/) | Logs | `source="filebeat"` (same endpoint) |
@@ -55,5 +55,5 @@ All agents collect from the same `/var/log/containers/` path on the node:
 ## Tear down
 
 ```bash
-kubectl delete pod logs-demo -n steve
+kubectl delete pod logs-demo -n $NAMESPACE
 ```

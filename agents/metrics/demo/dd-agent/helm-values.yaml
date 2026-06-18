@@ -46,7 +46,7 @@ clusterAgent:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
   datadog_cluster_yaml:
     use_v2_api:
@@ -56,7 +56,7 @@ agents:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
   useConfigMap: true
   customAgentConfig:

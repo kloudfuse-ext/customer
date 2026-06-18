@@ -45,8 +45,8 @@ for oplog access.
 kubectl apply -f ../mongodb-manifest.yaml
 
 # 2. Add Autodiscovery annotations to the kfuse-mongodb StatefulSet
-kubectl patch statefulset kfuse-mongodb -n steve --patch-file patch-annotations.yaml
-kubectl rollout restart statefulset/kfuse-mongodb -n steve
+kubectl patch statefulset kfuse-mongodb -n $NAMESPACE --patch-file patch-annotations.yaml
+kubectl rollout restart statefulset/kfuse-mongodb -n $NAMESPACE
 
 # 3. Deploy the Datadog Agent
 helm repo add datadog https://helm.datadoghq.com
@@ -81,6 +81,6 @@ mongodb_mem_resident{service:kfuse-mongodb}
 ```bash
 helm uninstall datadog-mongodb -n datadog-agent
 # Optionally remove the annotations patch:
-kubectl patch statefulset kfuse-mongodb -n steve --type=json \
+kubectl patch statefulset kfuse-mongodb -n $NAMESPACE --type=json \
   -p='[{"op":"remove","path":"/spec/template/metadata/annotations/ad.datadoghq.com~1mongodb.check_names"}]'
 ```

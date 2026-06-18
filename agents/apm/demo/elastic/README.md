@@ -17,7 +17,7 @@ forwarded to Kloudfuse via the Elastic APM intake API.
   ```bash
   kubectl create secret generic kloudfuse-api-key \
     --from-literal=value=<token> \
-    -n steve
+    -n $NAMESPACE
   ```
 - If auth is not enabled, remove the `ELASTIC_APM_SECRET_TOKEN` env var from `manifest.yaml`.
 
@@ -48,5 +48,5 @@ source="apm" service.name="demo-elastic-service"
 ## Tear down
 
 ```bash
-kubectl delete pod apm-demo-elastic -n steve
+kubectl delete pod apm-demo-elastic -n $NAMESPACE
 ```

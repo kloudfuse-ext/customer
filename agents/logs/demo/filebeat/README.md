@@ -42,7 +42,7 @@ source="filebeat"
 Filter to the demo pod by Kubernetes namespace:
 
 ```
-source="filebeat" kubernetes.namespace="steve"
+source="filebeat" kubernetes.namespace="$NAMESPACE"
 ```
 
 ## Tear down

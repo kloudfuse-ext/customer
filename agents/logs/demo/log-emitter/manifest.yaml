@@ -6,12 +6,12 @@
 #
 # Deploy:
 #   kubectl apply -f manifest.yaml
-#   kubectl logs logs-demo -n steve -f
+#   kubectl logs logs-demo -n $NAMESPACE -f
 apiVersion: v1
 kind: Pod
 metadata:
   name: logs-demo
-  namespace: steve
+  namespace: <NAMESPACE>>
   labels:
     app: logs-demo
     # Annotation used by Datadog Agent for per-pod log source override
@@ -25,7 +25,7 @@ spec:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
 
   containers:
@@ -38,7 +38,7 @@ spec:
           import json, time, datetime, os, socket
 
           pod_name  = os.environ.get("POD_NAME", socket.gethostname())
-          namespace = os.environ.get("POD_NAMESPACE", "steve")
+          namespace = os.environ.get("POD_NAMESPACE", "$NAMESPACE")
 
           records = [
               ("INFO",  "request completed",      {"method": "GET",  "path": "/api/health",   "status": 200, "latency_ms": 12}),

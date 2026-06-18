@@ -19,7 +19,7 @@ daemonset:
   tolerations:
     - key: "owner"
       operator: "Equal"
-      value: "steve"
+      value: "<NODE_LABEL>"
       effect: "NoSchedule"
   # Disable default elasticsearch TLS cert and credentials — not needed when pointing at Kloudfuse
   secretMounts: []

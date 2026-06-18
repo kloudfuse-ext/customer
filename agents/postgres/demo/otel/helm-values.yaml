@@ -31,7 +31,7 @@ replicaCount: 1
 tolerations:
   - key: "owner"
     operator: "Equal"
-    value: "steve"
+    value: "<NODE_LABEL>"
     effect: "NoSchedule"
   - key: "node.kubernetes.io/memory-pressure"
     operator: "Exists"
@@ -98,7 +98,7 @@ config:
           value: dev
           action: upsert
         - key: kube_namespace
-          value: steve
+          value: <NAMESPACE>
           action: upsert
         - key: kube_service
           value: kfuse-configdb

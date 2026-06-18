@@ -41,13 +41,13 @@ Logs are stored in the **Logs store**. Query in the Kloudfuse UI using the `agen
 to distinguish this deployment from the Helm-based Filebeat:
 
 ```
-agent="filebeat" kube_namespace="steve"
+agent="filebeat" kube_namespace="$NAMESPACE"
 ```
 
 Filter by container name:
 
 ```
-agent="filebeat" kube_namespace="steve" kube_container_name="log-emitter"
+agent="filebeat" kube_namespace="$NAMESPACE" kube_container_name="log-emitter"
 ```
 
 ## Tear down
