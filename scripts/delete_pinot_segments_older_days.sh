@@ -72,7 +72,8 @@ echo "Total segments: $(wc -l < "${TABLE}.all_segments.txt")"
 
 for seg in $(cat "${TABLE}.all_segments.txt"); do
   meta=$(curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}/metadata")
-  end_time=$(echo "$meta" | jq -r '.segmentMetadata.endTimeMs // .segmentMetadata.segment.end.time // empty' 2>/dev/null)
+  # Metadata is a flat object with dotted keys; end time is "segment.end.time" (millis, per "segment.time.unit").
+  end_time=$(echo "$meta" | jq -r '.["segment.end.time"] // empty' 2>/dev/null)
 
   if [ -n "$end_time" ] && [ "$end_time" -lt "$CUTOFF_MS" ] 2>/dev/null; then
     echo "$seg" >> "$OLD_SEGMENTS_FILE"
