@@ -68,7 +68,7 @@ helm ls -n kfuse
 # Apply, pinning the same version returned above
 helm upgrade kfuse kfuse/kfuse -n kfuse \
   --version <CURRENT_VERSION> \
-  -f artifacts/aws/prod-aws.yaml
+  -f custom-values.yaml
 ```
 
 Commit the yaml change so the cluster state stays reflected in the customer repo.
@@ -172,7 +172,7 @@ Kubernetes does not support shrinking a PVC in place, so this is done by recreat
 StatefulSet and its PVCs at the new (smaller) size. The data is safe because Pinot
 **re-hydrates segments automatically from blob storage (deep store)** once the servers come back up
 
-> **Do this only for the OFFLINE table's servers.** Only proceed after Step 3 confirms the
+> **Do this for pinot-offline servers only. A table is always spread around realtime and offline server in our deployments. OFFLINE table is a different concept in Pinot.** Only proceed after Step 3 confirms the
 > deletion; the segments must exist in the deep store for re-hydration to work. Do this
 > during a low-traffic window.
 
@@ -215,7 +215,7 @@ StatefulSet and its PVCs at the new (smaller) size. The data is safe because Pin
    ```bash
    helm upgrade kfuse kfuse/kfuse -n kfuse \
      --version <CURRENT_VERSION> \
-     -f artifacts/aws/prod-aws.yaml
+     -f custom-values.yaml
    ```
 
 4. **Wait for the offline servers to come up and re-hydrate.**
