@@ -7,20 +7,24 @@ TABLE=""
 DAYS_OLD=15
 DRY_RUN=false
 SEGMENT_FILE=""
+USE_METADATA=false
 
 while :; do
   case "$1" in
-    -t|--table)    TABLE="$2"; shift 2 ;;
-    -d|--days)     DAYS_OLD="$2"; shift 2 ;;
-    -f|--file)     SEGMENT_FILE="$2"; shift 2 ;;
-    --dry-run)     DRY_RUN=true; shift ;;
+    -t|--table)     TABLE="$2"; shift 2 ;;
+    -d|--days)      DAYS_OLD="$2"; shift 2 ;;
+    -f|--file)      SEGMENT_FILE="$2"; shift 2 ;;
+    --dry-run)      DRY_RUN=true; shift ;;
+    --use-metadata) USE_METADATA=true; shift ;;
     -h|--help)
-      echo "Usage: $0 -t <table_name> [-d <days_old>] [--dry-run] [-f <segment_file>]"
+      echo "Usage: $0 -t <table_name> [-d <days_old>] [--dry-run] [--use-metadata] [-f <segment_file>]"
       echo ""
-      echo "  -t, --table   Table name (required)"
-      echo "  -d, --days    Segments older than N days (default: 15)"
-      echo "  --dry-run     Only list old segments to file, skip deletion"
-      echo "  -f, --file    Skip fetching; read segment names from this file and delete"
+      echo "  -t, --table      Table name (required)"
+      echo "  -d, --days       Segments older than N days (default: 15)"
+      echo "  --dry-run        Only list old segments to file, skip deletion"
+      echo "  --use-metadata   Fetch each segment's end time via the metadata API"
+      echo "                   instead of parsing the timestamp from the segment name"
+      echo "  -f, --file       Skip fetching; read segment names from this file and delete"
       exit 0 ;;
     "") break ;;
     -*) echo "Unknown option: $1"; exit 1 ;;
@@ -59,8 +63,19 @@ if [ -n "$SEGMENT_FILE" ]; then
   exit 0
 fi
 
+# Convert a compact UTC timestamp (YYYYMMDDTHHMMZ) to epoch seconds.
+# Works with both GNU date (Linux) and BSD date (macOS).
+ts_to_epoch() {
+  local ts="${1%Z}"                 # 20260630T0511
+  local d="${ts%T*}" t="${ts#*T}"   # 20260630 / 0511
+  local iso="${d:0:4}-${d:4:2}-${d:6:2} ${t:0:2}:${t:2:2}:00"
+  date -u -d "$iso" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%d %H:%M:%S" "$iso" +%s 2>/dev/null
+}
+
 # --- MODE: Fetch segments and filter by age ---
-CUTOFF_MS=$(( ($(date +%s) - DAYS_OLD * 86400) * 1000 ))
+CUTOFF=$(( $(date +%s) - DAYS_OLD * 86400 ))
+CUTOFF_MS=$(( CUTOFF * 1000 ))
 
 echo "Fetching segments for ${TABLE}_REALTIME..."
 curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME" > "${TABLE}.segments.json"
@@ -70,15 +85,30 @@ echo "Total segments: $(wc -l < "${TABLE}.all_segments.txt")"
 
 > "$OLD_SEGMENTS_FILE"
 
-for seg in $(cat "${TABLE}.all_segments.txt"); do
-  meta=$(curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}/metadata")
-  # Metadata is a flat object with dotted keys; end time is "segment.end.time" (millis, per "segment.time.unit").
-  end_time=$(echo "$meta" | jq -r '.["segment.end.time"] // empty' 2>/dev/null)
-
-  if [ -n "$end_time" ] && [ "$end_time" -lt "$CUTOFF_MS" ] 2>/dev/null; then
-    echo "$seg" >> "$OLD_SEGMENTS_FILE"
-  fi
-done
+if [ "$USE_METADATA" = true ]; then
+  # Query each segment's metadata API and read its end time. Metadata is a flat
+  # object with dotted keys; end time is "segment.end.time" (millis, per
+  # "segment.time.unit"). Slower (one API call per segment) but authoritative.
+  echo "Determining segment age via metadata API..."
+  for seg in $(cat "${TABLE}.all_segments.txt"); do
+    meta=$(curl -s "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}/metadata")
+    end_time=$(echo "$meta" | jq -r '.["segment.end.time"] // empty' 2>/dev/null)
+    if [ -n "$end_time" ] && [ "$end_time" -lt "$CUTOFF_MS" ] 2>/dev/null; then
+      echo "$seg" >> "$OLD_SEGMENTS_FILE"
+    fi
+  done
+else
+  # Segment names embed their timestamp as the last __-delimited field, e.g.
+  # kf_logs__0__0__20260630T0511Z -> 20260630T0511Z. Parse it directly instead
+  # of making a per-segment metadata API call.
+  for seg in $(cat "${TABLE}.all_segments.txt"); do
+    ts="${seg##*__}"
+    seg_epoch=$(ts_to_epoch "$ts")
+    if [ -n "$seg_epoch" ] && [ "$seg_epoch" -lt "$CUTOFF" ] 2>/dev/null; then
+      echo "$seg" >> "$OLD_SEGMENTS_FILE"
+    fi
+  done
+fi
 
 echo "Segments older than ${DAYS_OLD} days: $(wc -l < "$OLD_SEGMENTS_FILE")"
 cat "$OLD_SEGMENTS_FILE"
@@ -96,6 +126,8 @@ fi
 echo -n "Press enter to proceed with deletion or ^C to cancel: "
 read ans
 
+
+##### there is a pinot bulk api that can be used to delete multiple segments in one request, but its not tested yet, so using the per-segment delete for now. ref - https://github.com/apache/pinot/blob/master/pinot-controller/src/main/java/org/apache/pinot/controller/api/resources/PinotSegmentRestletResource.java#L622
 for seg in $(cat "$OLD_SEGMENTS_FILE"); do
   echo "Deleting: $seg"
   curl -s -X DELETE "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}"
