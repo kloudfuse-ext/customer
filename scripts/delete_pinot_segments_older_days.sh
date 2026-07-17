@@ -53,14 +53,18 @@ delete_segments() {
     body="${body%$'\n'*}"     # everything before it: response body
     echo "Response: $body (HTTP $code)"
 
-    # Stop immediately if curl itself failed or the controller returned non-2xx.
-    if [ "$curl_rc" -ne 0 ]; then
-      echo "Error: curl failed (exit $curl_rc) while deleting $seg. Stopping."
+    # Host not reachable (connection refused, DNS, timeout, ...) -> curl exits
+    # non-zero and returns no HTTP code. Bail out entirely in that case.
+    if [ "$curl_rc" -ne 0 ] || [ -z "$code" ]; then
+      echo "Error: controller ${CONTROLLER} not reachable (curl exit $curl_rc) while deleting $seg. Stopping."
       exit 1
     fi
-    if [ -z "$code" ] || [ "$code" -lt 200 ] 2>/dev/null || [ "$code" -ge 300 ] 2>/dev/null; then
-      echo "Error: delete of $seg returned HTTP $code. Stopping."
-      exit 1
+    # Host reachable but this segment wasn't deleted (non-2xx). Warn and keep
+    # going so one bad segment doesn't block the rest.
+    if [ "$code" -lt 200 ] 2>/dev/null || [ "$code" -ge 300 ] 2>/dev/null; then
+      echo "Warning: delete of $seg returned HTTP $code. Skipping to next segment."
+      echo ""
+      continue
     fi
     echo "Successfully deleted: $seg"
     echo ""
