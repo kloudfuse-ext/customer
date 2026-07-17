@@ -39,6 +39,34 @@ fi
 
 OLD_SEGMENTS_FILE="${TABLE}.old_segments.txt"
 
+# Delete every segment listed (one per line) in the given file.
+# There is a pinot bulk API that can delete multiple segments in one request,
+# but it's not tested yet, so we use the per-segment delete for now. ref -
+# https://github.com/apache/pinot/blob/master/pinot-controller/src/main/java/org/apache/pinot/controller/api/resources/PinotSegmentRestletResource.java#L622
+delete_segments() {
+  local list_file="$1"
+  for seg in $(cat "$list_file"); do
+    echo "Deleting: $seg"
+    body=$(curl -s -w $'\n%{http_code}' -X DELETE "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}")
+    curl_rc=$?
+    code="${body##*$'\n'}"    # last line: HTTP status code
+    body="${body%$'\n'*}"     # everything before it: response body
+    echo "Response: $body (HTTP $code)"
+
+    # Stop immediately if curl itself failed or the controller returned non-2xx.
+    if [ "$curl_rc" -ne 0 ]; then
+      echo "Error: curl failed (exit $curl_rc) while deleting $seg. Stopping."
+      exit 1
+    fi
+    if [ -z "$code" ] || [ "$code" -lt 200 ] 2>/dev/null || [ "$code" -ge 300 ] 2>/dev/null; then
+      echo "Error: delete of $seg returned HTTP $code. Stopping."
+      exit 1
+    fi
+    echo "Successfully deleted: $seg"
+    echo ""
+  done
+}
+
 # --- MODE: File provided — skip fetching, go straight to deletion ---
 if [ -n "$SEGMENT_FILE" ]; then
   if [ ! -f "$SEGMENT_FILE" ]; then
@@ -53,11 +81,7 @@ if [ -n "$SEGMENT_FILE" ]; then
   echo -n "Press enter to proceed with deletion or ^C to cancel: "
   read ans
 
-  for seg in $(cat "$SEGMENT_FILE"); do
-    echo "Deleting: $seg"
-    curl -s -X DELETE "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}"
-    echo ""
-  done
+  delete_segments "$SEGMENT_FILE"
 
   echo "Done."
   exit 0
@@ -126,12 +150,6 @@ fi
 echo -n "Press enter to proceed with deletion or ^C to cancel: "
 read ans
 
-
-##### there is a pinot bulk api that can be used to delete multiple segments in one request, but its not tested yet, so using the per-segment delete for now. ref - https://github.com/apache/pinot/blob/master/pinot-controller/src/main/java/org/apache/pinot/controller/api/resources/PinotSegmentRestletResource.java#L622
-for seg in $(cat "$OLD_SEGMENTS_FILE"); do
-  echo "Deleting: $seg"
-  curl -s -X DELETE "http://${CONTROLLER}/segments/${TABLE}_REALTIME/${seg}"
-  echo ""
-done
+delete_segments "$OLD_SEGMENTS_FILE"
 
 echo "Done."
