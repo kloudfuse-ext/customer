@@ -1,0 +1,55 @@
+# VictoriaMetrics Agent (vmagent) — Metrics → Kloudfuse
+#
+# Deploys vmagent using the official VictoriaMetrics OCI Helm chart.
+# Scrapes all pods annotated with prometheus.io/scrape=true (including
+# metrics-demo) and forwards metrics to Kloudfuse via Prometheus remote write.
+#
+# Prerequisites:
+#   (no helm repo add needed — chart is pulled from OCI registry)
+#
+# Deploy:
+#   helm upgrade --install vmagent \
+#     oci://ghcr.io/victoriametrics/helm-charts/victoria-metrics-agent \
+#     -f helm-values.yaml \
+#     --namespace victoria \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit the headers block if auth is not enabled).
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "<NODE_LABEL>"
+    effect: "NoSchedule"
+
+remoteWrite:
+  - url: https://<kloudfuse-hostname>/ingester/write
+    headers:
+      - "Authorization: Bearer <token>"    # omit if auth is not enabled
+
+config:
+  scrape_configs:
+    # Scrape pods annotated with prometheus.io/scrape=true (includes metrics-demo)
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: "true"
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: kubernetes_pod_name
+
+rbac:
+  create: true
