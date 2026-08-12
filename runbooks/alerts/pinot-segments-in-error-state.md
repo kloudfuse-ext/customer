@@ -31,7 +31,13 @@ When Apache Pinot segments are in an ERROR state, the controller has determined 
 
 **Note:** This metric is updated by the Pinot controller every 5 minutes, so there may be a short lag between when a segment enters a bad state and when the alert fires.
 
-**Note:** All commands in this runbook assume namespace `kfuse`. If your deployment uses a different namespace, replace `kfuse` with your namespace in all commands.
+**Note:** The `segments-error.sh` script defaults to namespace `kfuse`. If your deployment uses a different namespace, prefix script commands with `NAMESPACE=<your-namespace>`:
+
+```bash
+NAMESPACE=kfuse ./segments-error.sh status kf_logs_REALTIME
+```
+
+For raw `kubectl` commands in this runbook, replace `-n kfuse` with `-n <your-namespace>`.
 
 ---
 
@@ -108,15 +114,22 @@ If any pod is not Running, address pod health first:
 
 ## Step 2: Identify Segments in ERROR State
 
-Use the [segments-error.sh](../../scripts/alerts/segments-error.sh) script to list ERROR segments and their server assignments for the affected table from the alert:
+**Table naming:** The alert label `table` uses the fully-qualified Pinot internal name — `kf_logs_REALTIME`, `kf_metrics_REALTIME`, etc. — which includes the `_REALTIME` or `_OFFLINE` suffix. Pass this full name to the script. The `/tables` API (used by `status` with no argument) returns base names without the suffix; the script appends both suffixes automatically when scanning all tables.
+
+Use the [segments-error.sh](../../scripts/alerts/segments-error.sh) script to list non-healthy segments and their server assignments for the affected table from the alert:
 
 ```bash
 # Show segment states for the affected table
-./segments-error.sh status <TABLE_NAME>
+NAMESPACE=<your-namespace> ./segments-error.sh status kf_logs_REALTIME
 
 # Show segment states and server assignments side-by-side
-./segments-error.sh diagnose <TABLE_NAME>
+NAMESPACE=<your-namespace> ./segments-error.sh diagnose kf_logs_REALTIME
+
+# Scan all tables for non-healthy segments
+NAMESPACE=<your-namespace> ./segments-error.sh status
 ```
+
+Note: The script treats both `ONLINE` and `CONSUMING` as healthy states. `CONSUMING` is normal for the active segment in a REALTIME table.
 
 ---
 
@@ -156,7 +169,45 @@ Common error patterns:
 
 After a server restart, Pinot must re-download segments from deep store. During this time segments may temporarily appear in ERROR before transitioning to ONLINE.
 
-Check if segments are actively loading:
+First check whether the server is restarting repeatedly (high restart count is a red flag):
+
+```bash
+kubectl get pods -n <NAMESPACE> | grep pinot-server
+```
+
+If `RESTARTS` is high, check the previous container logs for the crash reason before assuming a transient restart:
+
+```bash
+kubectl logs -n <NAMESPACE> <SERVER_POD> -c server --previous 2>&1 | tail -50
+```
+
+Common crash signatures in the logs:
+
+| Log Pattern | Cause |
+|-------------|-------|
+| `Terminating due to java.lang.OutOfMemoryError: Java heap space` | JVM heap too small — proceed to **Case OOM** below |
+| `No space left on device` | Disk full — proceed to **Case C** |
+| No crash output / clean shutdown | Kubernetes OOM kill (node-level) — check `kubectl describe pod` for `OOMKilled` |
+
+**Case OOM: JVM Heap Exhaustion**
+
+The server is killed by its own OOM handler while building or loading a large segment. Confirm the current heap setting:
+
+```bash
+kubectl exec -n <NAMESPACE> <SERVER_POD> -c server -- sh -c \
+  'cat /proc/1/cmdline | tr "\0" "\n" | grep -E "Xmx|Xms"'
+```
+
+If the heap is undersized (e.g. `2G`) relative to segment sizes, increase `jvmMemory` in your Helm values and redeploy:
+
+```yaml
+server:
+  jvmMemory: 8G
+```
+
+After redeploying, verify the pod stabilizes (restart count stops increasing) before proceeding to Step 5.
+
+**Transient restart (no crash):** Check if segments are actively reloading:
 
 **Navigate to:** Kloudfuse UI → **Logs** → **Advanced Search**
 

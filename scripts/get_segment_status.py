@@ -12,7 +12,7 @@ def get_from_pinot(controller_port: str, table_name: str, path: str,
 
     resp = requests.get(url, params=params, headers=headers, timeout=30000)
     if resp.status_code not in (200, 204):
-        print("Status code: " + str(resp.status_code) + "; body = " + str(resp.json()))
+        print("Status code: " + str(resp.status_code) + "; body = " + resp.text)
         raise RuntimeError("failed to query pinot controller for segments")
     return resp.json()
 
