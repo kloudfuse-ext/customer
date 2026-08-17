@@ -13,7 +13,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PROJECT_SYNC_TOKEN }}
           ORGANIZATION: "kloudfuse-ext"
-          PROJECT_NUMBER: "1" # <-- Check that this matches your actual board ID!
+          PROJECT_NUMBER: "9"
         run: |
           REPOS=(
             "customer-zscaler"
