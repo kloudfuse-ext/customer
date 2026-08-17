@@ -13,11 +13,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PROJECT_SYNC_TOKEN }}
           ORGANIZATION: "kloudfuse-ext"
-          PROJECT_NUMBER: "9" # Replace with your actual project board number
+          PROJECT_NUMBER: "1" # <-- Check that this matches your actual board ID!
         run: |
-          # Explicitly authenticate the CLI environment using your token
-          echo "$GH_TOKEN" | gh auth login --with-token 2>/dev/null
-
           REPOS=(
             "customer-zscaler"
             "customer-AA"
@@ -32,11 +29,11 @@ jobs:
           for REPO in "${REPOS[@]}"; do
             echo "Checking repo: $REPO..."
             
-            # The '|| true' statement prevents the script from crashing if one repo fails
-            ISSUES=$(gh issue list --repo "$ORGANIZATION/$REPO" --state open --json url --jq '.[].url' 2>/dev/null) || true
+            # Safely fetch issue URLs. If the repo is empty or gives an error, it moves to the next repo.
+            ISSUES=$(gh issue list --repo "$ORGANIZATION/$REPO" --state open --json url --jq '.[].url' 2>/dev/null) || { echo "⚠️ Could not read $REPO (check permissions). Skipping..."; continue; }
 
             if [ -z "$ISSUES" ]; then
-              echo "⚠️ Could not read or found 0 open issues in $REPO. Skipping..."
+              echo "No open issues found in $REPO."
               continue
             fi
 
