@@ -13,10 +13,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PROJECT_SYNC_TOKEN }}
           ORGANIZATION: "kloudfuse-ext"
-          # Change this number to your actual Project board number
-          PROJECT_NUMBER: "9" 
+          PROJECT_NUMBER: "9" # Replace with your actual project board number
         run: |
-          # List your 8 specific repositories
+          # Explicitly authenticate the CLI environment using your token
+          echo "$GH_TOKEN" | gh auth login --with-token 2>/dev/null
+
           REPOS=(
             "customer-zscaler"
             "customer-AA"
@@ -28,16 +29,19 @@ jobs:
             "customer-cactuscomm"
           )
 
-          # Loop through each repository and add open issues
           for REPO in "${REPOS[@]}"; do
             echo "Checking repo: $REPO..."
             
-            # Find all open issue URLs
-            ISSUES=$(gh issue list --repo "$ORGANIZATION/$REPO" --state open --json url --jq '.[].url')
+            # The '|| true' statement prevents the script from crashing if one repo fails
+            ISSUES=$(gh issue list --repo "$ORGANIZATION/$REPO" --state open --json url --jq '.[].url' 2>/dev/null) || true
+
+            if [ -z "$ISSUES" ]; then
+              echo "⚠️ Could not read or found 0 open issues in $REPO. Skipping..."
+              continue
+            fi
 
             for URL in $ISSUES; do
               echo "Adding $URL to project..."
-              gh project item-add "$PROJECT_NUMBER" --owner "$ORGANIZATION" --url "$URL" --format json
+              gh project item-add "$PROJECT_NUMBER" --owner "$ORGANIZATION" --url "$URL" --format json || true
             done
           done
-
