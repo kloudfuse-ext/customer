@@ -2,7 +2,7 @@ name: Multi-Repo Project Sync
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs automatically every hour
+    - cron: '0 */6 * * *' # Runs at minute 0 of every 6th hour
   workflow_dispatch:   # Lets you click a button to run it manually
 
 jobs:
