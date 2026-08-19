@@ -1,0 +1,90 @@
+# OTel Collector — Host Configuration for Kloudfuse
+#
+# Install the OTel Collector on the host first (see README.md), then place this file at:
+#   /etc/otelcol-contrib/config.yaml
+#
+# Replace <kloudfuse-hostname> and <token> before applying.
+# Omit the Kf-Api-Key header if ingestion authentication is not enabled.
+
+receivers:
+  # Receives OTLP telemetry from the demo pod via hostNetwork (localhost:4318)
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+        cors:
+          allowed_origins:
+            - "http://*"
+            - "https://*"
+
+  # Collects host-level metrics (CPU, memory, disk, filesystem) from the local OS
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
+      disk:
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
+      network:
+      load:
+
+exporters:
+  debug:
+    verbosity: basic
+  otlphttp:
+    logs_endpoint: https://<kloudfuse-hostname>/ingester/otlp/v1/logs
+    metrics_endpoint: https://<kloudfuse-hostname>/ingester/otlp/metrics
+    traces_endpoint: https://<kloudfuse-hostname>/ingester/otlp/traces
+    headers:
+      Kf-Api-Key: <token>     # omit if auth is not enabled
+
+processors:
+  batch:
+    timeout: 10s
+  resource:
+    attributes:
+      - key: kf_platform      # required: tells Kloudfuse to link APM data to host infrastructure
+        value: "host"
+        action: upsert
+      - key: kf_metrics_agent # required: enables host metric correlation in APM Services Infra tab
+        value: "otlp"
+        action: upsert
+  resourcedetection:
+    detectors:
+      - env
+      - system
+      - ec2
+      - gcp
+      - azure
+    override: true
+    timeout: 2s
+
+extensions:
+  health_check: {}
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource, resourcedetection]
+      exporters: [otlphttp]
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [batch, resource, resourcedetection]
+      exporters: [otlphttp]
+    logs:
+      receivers: [otlp]      # demo pod sends logs via OTLP; add filelog receiver here for file-based log collection
+      processors: [batch, resource, resourcedetection]
+      exporters: [otlphttp]
