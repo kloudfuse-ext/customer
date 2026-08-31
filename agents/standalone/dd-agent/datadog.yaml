@@ -1,0 +1,31 @@
+# Datadog Agent — Standalone Host → Kloudfuse
+#
+# Drop-in /etc/datadog-agent/datadog.yaml for a standalone host (bare metal, VM,
+# or a systemd-enabled container) where the Agent runs as the `datadog-agent`
+# systemd service.
+#
+# Validated end-to-end against a live Kloudfuse cluster: host metrics arrive
+# (see README.md). Replace <kloudfuse-hostname> with your cluster hostname.
+
+api_key: kloudfuse            # any non-blank string when forwarding to Kloudfuse
+site: datadoghq.com
+hostname: standalone-demo-host
+
+dd_url: "https://<kloudfuse-hostname>/ingester"
+skip_ssl_validation: true     # required for a self-signed or expired cluster certificate; remove to enforce TLS
+
+logs_enabled: true
+logs_config:
+  logs_dd_url: "<kloudfuse-hostname>:443"   # host:port form, no /ingester prefix
+  logs_no_ssl: false
+  use_http: true
+  use_v2_api: false
+
+metadata_providers:
+  - name: host
+    interval: 300
+
+# Route metrics to the v2 series endpoint. Required — the cluster's api/v1/series
+# endpoint is not used; api/v2/series is.
+use_v2_api:
+  series: true

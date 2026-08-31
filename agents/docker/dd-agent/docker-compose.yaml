@@ -1,0 +1,35 @@
+# Datadog Agent — Docker → Kloudfuse (demo)
+#
+# Runs a small log-emitting workload plus the Datadog Agent. The Agent collects
+# host/container metrics and tails every container's stdout (container_collect_all),
+# forwarding both to Kloudfuse.
+#
+# Usage:
+#   1. Edit datadog/datadog.yaml and replace <kloudfuse-hostname>.
+#   2. export DD_API_KEY=<an ingestion API key, or "kloudfuse" if auth is disabled>
+#   3. docker compose up -d --build
+#   4. See README.md for verification.
+
+services:
+  log-emitter:
+    image: alpine
+    container_name: doctest-workload
+    restart: unless-stopped
+    command: sh -c 'i=0; while true; do echo "{\"level\":\"INFO\",\"service\":\"doctest\",\"msg\":\"doctest log line\",\"i\":$$i}"; i=$$((i+1)); sleep 3; done'
+
+  datadog:
+    build: ./datadog
+    container_name: datadog-agent
+    restart: unless-stopped
+    environment:
+      # The Agent container entrypoint REQUIRES DD_API_KEY as an environment variable —
+      # api_key in datadog.yaml alone is not sufficient to start the container.
+      - DD_API_KEY=${DD_API_KEY:-kloudfuse}
+      - DD_HOSTNAME=docker-demo-host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - log-emitter

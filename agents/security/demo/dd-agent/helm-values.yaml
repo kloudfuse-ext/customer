@@ -1,0 +1,93 @@
+# Datadog Agent — Container Logs with Sensitive-Data Masking → Kloudfuse
+#
+# Deploys the Datadog node Agent as a DaemonSet to collect container logs from all
+# pods on each node, MASK card numbers / card security codes / credentials / emails
+# in the agent, and forward the redacted logs to Kloudfuse.
+#
+# The masking rules under agents.customAgentConfig.logs_config.processing_rules are
+# the ones documented in kf-docs (reference/datadog/log-processing.adoc#mask-pii).
+# They apply to EVERY log source the agent collects. Source-level log_processing_rules
+# would be additive, not a replacement, so the masks are set globally here.
+#
+# Prerequisites:
+#   helm repo add datadog https://helm.datadoghq.com && helm repo update
+#
+# Deploy:
+#   kubectl create namespace datadog-agent
+#   helm upgrade --install datadog-agent datadog/datadog \
+#     -f helm-values.yaml \
+#     -n datadog-agent \
+#     --version 3.65.0
+#
+# Replace <kloudfuse-hostname> with the external hostname of your Kloudfuse cluster.
+# Agent version 7.41+ and Helm chart version 3.1.10+ are required.
+
+datadog:
+  # Any non-blank string satisfies the agent's API key validation when forwarding to Kloudfuse
+  apiKey: "kloudfuse"
+  dd_url: "https://<kloudfuse-hostname>/ingester"
+
+  logsEnabled: true
+  logs:
+    enabled: true
+    containerCollectAll: true
+    containerCollectUsingFiles: true
+    autoMultiLineDetection: true
+
+  # Disable unused features for a logs-only deployment
+  kubeStateMetricsEnabled: false
+  kubeStateMetricsCore:
+    enabled: false
+  orchestratorExplorer:
+    enabled: false
+  apm:
+    enabled: false
+  processAgent:
+    enabled: false
+
+# Disable the Cluster Agent — not required for log collection
+clusterAgent:
+  enabled: false
+
+agents:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "<NODE_LABEL>"
+      effect: "NoSchedule"
+  useConfigMap: true
+  customAgentConfig:
+    logs_config:
+      logs_dd_url: "<kloudfuse-hostname>:443"   # logs use host:port format (no /ingester prefix)
+      logs_no_ssl: false
+      use_http: true
+      auto_multi_line_detection: true
+      use_v2_api: false
+
+      # ---- Sensitive-data masking (applies to every collected log source) ----
+      # Patterns are compiled with Go RE2. An invalid pattern in this global list
+      # stops the logs agent from starting, so validate before rollout.
+      # Rule order matters: key-anchored rules (CSC, credentials) run BEFORE the broad
+      # card-number rule so a card number embedded in a keyed value (e.g. track2) is
+      # masked whole, not fragmented by the card rule. Verified live on both agents.
+      processing_rules:
+        - type: mask_sequences
+          name: mask_card_security_codes
+          replace_placeholder: "$1$2[CSC REDACTED]"
+          pattern: "(?i)\\b(cvv2?|cvc2?|cid|pin_?block|track[12]|service_code)([\"']?\\s*[:=]\\s*[\"']?)[;%]?[^\\s,;\"'&}]+"
+        - type: mask_sequences
+          name: mask_credentials
+          replace_placeholder: "$1$2[SECRET REDACTED]"
+          pattern: "(?i)\\b(password|passwd|secret(?:_?key)?|api[_-]?key|x-api-key|auth(?:oriz(?:ation|ed))?_?token|access_?token|bearer)([\"']?\\s*[:=]\\s*[\"']?)[^\\s,;\"'&}]+"
+        - type: mask_sequences
+          name: mask_card_numbers
+          replace_placeholder: "[CARD REDACTED]"
+          pattern: "\\b(?:4\\d{3}|5[1-5]\\d{2}|2(?:22[1-9]|2[3-9]\\d|[3-6]\\d\\d|7[01]\\d|720)|3[47]\\d{2}|30[0-5]\\d|3(?:09|[689]\\d)\\d|6(?:011|5\\d\\d|4[4-9]\\d|22\\d)|35(?:2[89]|[3-8]\\d)|62\\d\\d)(?:[ -]?\\d){9,15}\\b"
+        - type: mask_sequences
+          name: mask_emails
+          replace_placeholder: "***@***.***"
+          pattern: "\\b[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}\\b"
+
+    metadata_providers:
+      - name: host
+        interval: 300

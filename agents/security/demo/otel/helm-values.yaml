@@ -1,0 +1,86 @@
+# OTel Collector — Container Logs with Sensitive-Data Masking → Kloudfuse
+#
+# Deploys the OTel Collector Contrib as a DaemonSet to collect container logs from
+# /var/log/pods/ on each node, MASK card numbers / card security codes / credentials /
+# emails in the collector, and forward the redacted logs to Kloudfuse.
+#
+# The transform/mask_sensitive statements are the ones documented in kf-docs
+# (reference/otel/logs-processing.adoc#mask-pii). Each replace_pattern is guarded
+# with `where IsString(body)` because replace_pattern is a silent no-op on map bodies.
+#
+# Prerequisites:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#
+# Deploy:
+#   helm upgrade --install otel-security open-telemetry/opentelemetry-collector \
+#     -f helm-values.yaml \
+#     --namespace otel \
+#     --create-namespace
+#
+# Replace <kloudfuse-hostname> and <token> (omit Kf-Api-Key if auth is not enabled).
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+mode: daemonset
+
+tolerations:
+  - key: "owner"
+    operator: "Equal"
+    value: "<NODE_LABEL>"
+    effect: "NoSchedule"
+
+presets:
+  logsCollection:
+    enabled: true
+    includeCollectorLogs: false
+  kubernetesAttributes:
+    enabled: true
+
+config:
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp:
+      logs_endpoint: https://<kloudfuse-hostname>/ingester/otlp/v1/logs
+      headers:
+        Kf-Api-Key: <token>     # omit if auth is not enabled
+
+  processors:
+    batch:
+      timeout: 10s
+    resourcedetection:
+      detectors: [env, gcp, eks, ec2, aks, azure]
+      override: false
+      timeout: 2s
+
+    # ---- Sensitive-data masking on the log body ----
+    # $$1$$2 (OTTL) echoes the captured key + separator so a masked JSON line stays
+    # valid JSON; only the value is replaced.
+    transform/mask_sensitive:
+      # Rule order matters: key-anchored rules (CSC, credentials) run BEFORE the broad
+      # card-number rule so a card number embedded in a keyed value (e.g. track2) is
+      # masked whole, not fragmented by the card rule. Verified live on both agents.
+      log_statements:
+        - context: log
+          statements:
+            # card security codes and track data
+            - replace_pattern(body, "(?i)\\b(cvv2?|cvc2?|cid|pin_?block|track[12]|service_code)([\"']?\\s*[:=]\\s*[\"']?)[;%]?[^\\s,;\"'&}]+", "$$1$$2[CSC REDACTED]")
+              where IsString(body)
+            # credentials and tokens
+            - replace_pattern(body, "(?i)\\b(password|passwd|secret(?:_?key)?|api[_-]?key|x-api-key|auth(?:oriz(?:ation|ed))?_?token|access_?token|bearer)([\"']?\\s*[:=]\\s*[\"']?)[^\\s,;\"'&}]+", "$$1$$2[SECRET REDACTED]")
+              where IsString(body)
+            # card numbers — major brand prefixes, 13–19 digits, any grouped layout; runs last
+            - replace_pattern(body, "\\b(?:4\\d{3}|5[1-5]\\d{2}|2(?:22[1-9]|2[3-9]\\d|[3-6]\\d\\d|7[01]\\d|720)|3[47]\\d{2}|30[0-5]\\d|3(?:09|[689]\\d)\\d|6(?:011|5\\d\\d|4[4-9]\\d|22\\d)|35(?:2[89]|[3-8]\\d)|62\\d\\d)(?:[ -]?\\d){9,15}\\b", "[CARD REDACTED]")
+              where IsString(body)
+            # emails
+            - replace_pattern(body, "\\b[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}\\b", "***@***.***")
+              where IsString(body)
+
+  service:
+    pipelines:
+      logs:
+        receivers: [filelog]
+        processors: [k8sattributes, resourcedetection, transform/mask_sensitive, batch]
+        exporters: [otlphttp]
