@@ -1,0 +1,40 @@
+# Datadog Agent — Docker → Kloudfuse
+#
+# Validated against a live Kloudfuse cluster: metrics and container logs both
+# arrive. See ../README.md for the verification queries.
+#
+# Replace <kloudfuse-hostname> with the external hostname of your Kloudfuse cluster.
+
+api_key: kloudfuse                                   # any non-blank string; the container entrypoint also requires the DD_API_KEY env var
+site: datadoghq.com
+
+dd_url: "https://<kloudfuse-hostname>/ingester"
+skip_ssl_validation: true    # required when the cluster presents a self-signed or expired certificate; remove to enforce TLS
+
+logs_enabled: true
+logs_config:
+  logs_dd_url: "<kloudfuse-hostname>:443"            # host:port form, no /ingester prefix
+  use_http: true
+  logs_no_ssl: false
+  auto_multi_line_detection: false
+  use_v2_api: false
+  container_collect_all: true
+
+apm_config:
+  enabled: true
+  apm_dd_url: "<kloudfuse-hostname>:443/ingester"
+
+process_config:
+  process_dd_url: "https://<kloudfuse-hostname>/ingester"
+  events_dd_url: "https://<kloudfuse-hostname>/ingester"
+  container_collection:
+    enabled: false
+
+metadata_providers:
+  - name: host
+    interval: 300
+
+# Route metrics to the v2 series endpoint (/ingester/api/v2/series), matching Kloudfuse's
+# validated Helm configuration. The v1 series endpoint also works, but v2 is preferred.
+use_v2_api:
+  series: true

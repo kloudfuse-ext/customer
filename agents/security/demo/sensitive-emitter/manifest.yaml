@@ -1,0 +1,122 @@
+---
+# Kubernetes Sensitive-Data Emitter Demo
+# Image:   python:3.12-slim (Docker Hub) — writes JSON logs containing test PANs,
+#          card security codes, credentials/tokens, and emails to stdout at 1 line/second.
+# Purpose: exercise the collector-side masking rules documented in kf-docs
+#          (reference/datadog/log-processing.adoc, reference/otel/logs-processing.adoc).
+# Logs:    collected from /var/log/containers/ by a node-level log agent (dd-agent or otel).
+#
+# SAFETY:  Every card number here is a public, non-live test number (Visa/MC/Amex/Discover
+#          test PANs). No real cardholder data is used or should ever be added.
+#
+# Deploy:
+#   kubectl apply -f manifest.yaml
+#   kubectl logs security-demo -n <NAMESPACE> -f
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-demo
+  namespace: <NAMESPACE>
+  labels:
+    app: security-demo
+    tags.datadoghq.com/service: security-demo
+    tags.datadoghq.com/env: dev
+  annotations:
+    # Datadog Autodiscovery — set log source and service for this pod
+    ad.datadoghq.com/sensitive-emitter.logs: '[{"source": "security-demo", "service": "security-demo"}]'
+spec:
+  restartPolicy: Always
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "<NODE_LABEL>"
+      effect: "NoSchedule"
+
+  containers:
+    - name: sensitive-emitter
+      image: python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          cat > /emitter.py << 'PYCODE'
+          import json, time, datetime, os, socket
+
+          pod_name  = os.environ.get("POD_NAME", socket.gethostname())
+          namespace = os.environ.get("POD_NAMESPACE", "default")
+
+          # (message, extra fields). Each record carries a sensitive value that the
+          # agent masking rules must redact, plus decoys that must be preserved.
+          records = [
+              ("payment authorized", {
+                  "pan": "4111111111111111",        # Visa test PAN (contiguous)
+                  "cvv": "123",                      # card security code
+                  "amount": "42.00", "currency": "USD"}),
+              ("payment authorized", {
+                  "pan": "5555 5555 5555 4444",      # Mastercard test PAN (4-4-4-4 spaced)
+                  "cvc2": "981",
+                  "amount": "9.99", "currency": "USD"}),
+              ("payment authorized", {
+                  "pan": "3782 822463 10005",        # Amex test PAN (15-digit 4-6-5)
+                  "cid": "1234",
+                  "amount": "120.50", "currency": "USD"}),
+              ("payment authorized", {
+                  "pan": "6011-0009-9013-9424",      # Discover test PAN (dashed)
+                  "cvv2": "456",
+                  "amount": "5.00", "currency": "USD"}),
+              ("terminal read", {
+                  "track2": ";4111111111111111=25121011000000000000?",  # Track 2 w/ sentinel
+                  "service_code": "101"}),
+              ("user login", {
+                  "user": "jane.doe+test@example.com",  # email
+                  "password": "hunter2-s3cret",         # credential
+                  "status": "200"}),
+              ("service call", {
+                  "endpoint": "/v1/charge",
+                  "authorization": "bearer=eyJhbGciOiJIUzI1NiJ9.payload.sig",  # token
+                  "api_key": "sk_live_51H9xExampleKeyValue0000"}),
+              # ---- decoys: must survive masking unchanged ----
+              ("audit note", {
+                  "note": "the password was reset by an administrator",  # prose, no : or =
+                  "status": "200"}),
+              ("order shipped", {
+                  "order_id": "ORD-77", "trace_id": "abc123def456",
+                  "latency_ms": "34"}),
+          ]
+
+          print("security-demo starting log loop (1 log/second)", flush=True)
+          counter = 0
+          while True:
+              message, fields = records[counter % len(records)]
+              now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+              record = {
+                  "timestamp": now,
+                  "level": "INFO",
+                  "message": message,
+                  "service": "security-demo",
+                  "pod": pod_name,
+                  "namespace": namespace,
+                  "counter": counter,
+              }
+              record.update(fields)
+              print(json.dumps(record), flush=True)
+              counter += 1
+              time.sleep(1)
+          PYCODE
+
+          exec python /emitter.py
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "100m"
+          memory: "128Mi"
