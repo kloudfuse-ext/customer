@@ -6,6 +6,7 @@ This directory contains scripts for common operations and trouble shooting the K
 - delete_duplicate_pinot_consuming_segments.sh
 - reset_consuming_state.py
 - download_dashboards.sh
+- kfuse-upgrade.sh (orchestrated helm upgrade: ordered stateful restarts, health gates -- see docs "Upgrade Instructions")
 - kfuse-postgres.sh
 - resize_pvc.sh
 - backupconfigdb.sh
