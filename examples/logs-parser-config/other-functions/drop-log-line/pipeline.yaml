@@ -1,0 +1,8 @@
+- dropLogLine:
+    conditions:
+      - matcher: "%kf_msg"
+        value: "DEBUG"
+        op: "contains"
+      - matcher: "#source"
+        value: "chatty-sidecar"
+        op: "=="

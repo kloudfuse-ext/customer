@@ -1,0 +1,9 @@
+- parser:
+    grok:
+      args:
+        - patterns:
+            - '%{TIMESTAMP_ISO8601:ts} %{LOGLEVEL:level} %{GREEDYDATA:msg}'
+      conditions:
+        - matcher: "#source"
+          value: "checkout-api"
+          op: "=="

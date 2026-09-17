@@ -1,0 +1,7 @@
+- setLogLevel:
+    args:
+      - level: "INFO"
+    conditions:
+      - matcher: "#source"
+        value: "heartbeat"
+        op: "=="

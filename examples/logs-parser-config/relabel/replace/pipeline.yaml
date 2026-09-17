@@ -1,0 +1,6 @@
+- relabel:
+    args:
+      - action: "replace"
+      - regex: ".*"
+      - replacement: "production"
+      - targetLabel: "env"

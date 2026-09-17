@@ -1,0 +1,8 @@
+- addFacet:
+    args:
+      - name: "pipeline_version"
+      - value: "3"
+    conditions:
+      - matcher: "#source"
+        value: "checkout-api"
+        op: "=="
