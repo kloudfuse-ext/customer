@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # kfuse-upgrade.sh -- orchestrated kfuse upgrade.
-# Published copy for customer use. Source of truth: kloudfuse/charts
-# deploy/upgrade/kfuse-upgrade.sh -- update there and re-sync this copy.
+# This copy (kloudfuse-ext/customer scripts/kfuse-upgrade.sh) is the
+# source of truth.
 #
-#
-# See deploy/UPGRADE-ORCHESTRATOR-DESIGN.md for the full design. Summary:
+# See deploy/UPGRADE-ORCHESTRATOR-DESIGN.md in kloudfuse/charts for the
+# full design. Summary:
 # a single `helm upgrade` is run with `updateStrategy: OnDelete` injected
 # for all stateful tiers (so nothing stateful restarts on its own), then
 # this script restarts pods in dependency order:
