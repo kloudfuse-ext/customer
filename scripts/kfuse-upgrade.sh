@@ -304,6 +304,8 @@ sts_update_revision() { kubectl -n "$NAMESPACE" get sts "$1" -o jsonpath='{.stat
 
 pod_revision() { kubectl -n "$NAMESPACE" get pod "$1" -o jsonpath='{.metadata.labels.controller-revision-hash}' 2>/dev/null || true; }
 
+pod_uid() { kubectl -n "$NAMESPACE" get pod "$1" -o jsonpath='{.metadata.uid}' 2>/dev/null || true; }
+
 pod_ready() {
   [ "$(kubectl -n "$NAMESPACE" get pod "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = "True" ]
 }
@@ -323,12 +325,16 @@ stale_pods() { # <sts> <replicas>
   echo "$out"
 }
 
-wait_pod_ready() { # <pod> -- waits for existence + Ready + current revision
-  local pod="$1" sts rev deadline
+wait_pod_ready() { # <pod> [old-uid] -- waits for existence + Ready + current revision
+  # With <old-uid>, additionally requires a NEW pod instance (uid changed):
+  # a just-deleted pod can linger Terminating-but-still-Ready on the current
+  # revision (force-restart case) and must not satisfy the wait.
+  local pod="$1" old_uid="${2:-}" sts rev deadline
   sts="${pod%-*}"
   rev="$(sts_update_revision "$sts")"
   deadline=$(( $(date +%s) + POD_TIMEOUT ))
   until kubectl -n "$NAMESPACE" get pod "$pod" >/dev/null 2>&1 \
+        && { [ -z "$old_uid" ] || [ "$(pod_uid "$pod")" != "$old_uid" ]; } \
         && [ "$(pod_revision "$pod")" = "$rev" ] \
         && pod_ready "$pod"; do
     [ "$(date +%s)" -ge "$deadline" ] && die "timed out waiting for pod $pod (Ready on revision $rev)"
@@ -522,7 +528,7 @@ health_gate() { # <class> <pod> <replicas>
 # ---------------------------------------------------------------------------
 
 restart_one_sts() { # <sts> <class> <replicas>
-  local sts="$1" class="$2" replicas="$3" mode="rolling" stale pod
+  local sts="$1" class="$2" replicas="$3" mode="rolling" stale pod old_uid uids spec
   wait_sts_observed "$sts"
   # shellcheck disable=SC2086
   matches_any "$sts" "$class" $RECREATE_GLOBS && mode="recreate"
@@ -553,14 +559,25 @@ restart_one_sts() { # <sts> <class> <replicas>
     # NOTE: kubectl delete bypasses PodDisruptionBudgets by design here.
     # --ignore-not-found: a force-listed ordinal may be absent (or vanish
     # between the scan and the delete); the readiness wait converges it.
+    # Pre-delete UIDs let the wait distinguish the replacement pod from the
+    # old one still Terminating (an absent pod yields "", disabling the check).
+    uids=""
+    for pod in $stale; do uids="$uids ${pod}=$(pod_uid "$pod")"; done
     # shellcheck disable=SC2086
     kubectl -n "$NAMESPACE" delete pod $stale --wait=false --ignore-not-found
-    for pod in $stale; do wait_pod_ready "$pod"; done
+    for spec in $uids; do wait_pod_ready "${spec%%=*}" "${spec#*=}"; done
     for pod in $stale; do health_gate "$class" "$pod" "$replicas"; done
   else
     for pod in $stale; do
-      kubectl -n "$NAMESPACE" delete pod "$pod" --ignore-not-found  # waits for termination
-      wait_pod_ready "$pod"
+      old_uid="$(pod_uid "$pod")"
+      # --wait=false: kubectl's foreground delete blocks until it observes
+      # the pod gone, but the StatefulSet controller recreates the same-named
+      # pod almost immediately -- if kubectl misses that window (or its watch
+      # connection stalls) it hangs forever with no timeout, freezing the
+      # rolling restart after "pod deleted" with the pod already Running.
+      # Replacement is detected by the UID change in wait_pod_ready instead.
+      kubectl -n "$NAMESPACE" delete pod "$pod" --wait=false --ignore-not-found
+      wait_pod_ready "$pod" "$old_uid"
       health_gate "$class" "$pod" "$replicas"
     done
   fi
