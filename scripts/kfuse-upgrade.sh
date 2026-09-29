@@ -359,11 +359,20 @@ wait_pod_exists_ready() { # <pod>
 # current revision (covers missing pods and scale-up ordinals, which the
 # stale-pod diff alone would skip) and applies the class health gate to
 # each pod (covers replica-only scale-ups that were never restarted).
-verify_component() { # <sts> <class> <replicas>
-  local sts="$1" class="$2" replicas="$3" i=0
+# Pods in [skip-list] were already verified by the caller this run and
+# are not re-checked (a full restart would otherwise double every
+# readiness wait and in-pod health probe).
+verify_component() { # <sts> <class> <replicas> [skip-list]
+  local sts="$1" class="$2" replicas="$3" skip=" ${4:-} " i=0 pod
   while [ "$i" -lt "$replicas" ]; do
-    wait_pod_ready "${sts}-${i}"
-    health_gate "$class" "${sts}-${i}" "$replicas"
+    pod="${sts}-${i}"
+    case "$skip" in
+      *" $pod "*) ;;
+      *)
+        wait_pod_ready "$pod"
+        health_gate "$class" "$pod" "$replicas"
+        ;;
+    esac
     i=$((i + 1))
   done
 }
@@ -581,7 +590,9 @@ restart_one_sts() { # <sts> <class> <replicas>
       health_gate "$class" "$pod" "$replicas"
     done
   fi
-  verify_component "$sts" "$class" "$replicas"
+  # Converge only the ordinals the restart loops above did not already
+  # verify (missing pods / scale-ups); on a full restart this is a no-op.
+  verify_component "$sts" "$class" "$replicas" "$stale"
   info "$sts: all $replicas replicas Ready and healthy on new revision"
 }
 
