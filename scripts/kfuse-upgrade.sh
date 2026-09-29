@@ -731,27 +731,52 @@ reapply_job() { # <job>
   kubectl -n "$NAMESPACE" apply -f "$WORKDIR/job.yaml" >/dev/null
 }
 
+job_uid() { kubectl -n "$NAMESPACE" get job "$1" -o jsonpath='{.metadata.uid}' 2>/dev/null || true; }
+
 # Job-controller event reasons for <job> ("Completed",
 # "BackoffLimitExceeded", ...). Events outlive the TTL-collected job by
-# ~1h, so they can disambiguate WHY a job disappeared. Empty on expiry.
-job_event_reasons() { # <job>
+# ~1h, so they can disambiguate WHY a job disappeared. Scoped to <uid>:
+# a same-named job from a previous run inside that hour leaves events
+# too, and its stale Completed must not vouch for this incarnation.
+# Empty on expiry or an empty uid.
+job_event_reasons() { # <job> <uid>
+  [ -n "${2:-}" ] || return 0
   kubectl -n "$NAMESPACE" get events \
-    --field-selector "involvedObject.kind=Job,involvedObject.name=$1" \
+    --field-selector "involvedObject.kind=Job,involvedObject.name=$1,involvedObject.uid=$2" \
     -o jsonpath='{range .items[*]}{.reason} {end}' 2>/dev/null || true
 }
 
+# Re-applies <job> from the release manifest -- once per wait; a second
+# failure dies. Mutates the caller's per-job loop state (uid, seen,
+# reapplied, deadline) via bash dynamic scoping: wait_for_jobs is the
+# only caller.
+retry_job_once() { # <job> <why>
+  [ "$reapplied" = true ] && die "job $1 failed again after re-apply -- inspect with: kubectl -n $NAMESPACE logs job/$1 --all-containers (if already TTL-collected: kubectl -n $NAMESPACE get events | grep $1)"
+  warn "$1: $2 -- re-applying from the release manifest"
+  reapply_job "$1"
+  uid="$(job_uid "$1")"
+  reapplied=true seen=false
+  deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+}
+
 wait_for_jobs() { # [glob list]
-  local jobs j deadline jout reasons
+  local jobs j deadline jout reasons juids spec uid
   # Jobs are created by the upgrade itself; give them a moment to appear.
   sleep 10
   jobs="$(list_managed_jobs "${1:-}")"
   [ -z "$jobs" ] && { info "no setup jobs found (nothing enabled?)"; return 0; }
+  # Snapshot every job's UID immediately (they exist at listing time, and
+  # a job later in the list may complete and be TTL-collected while we
+  # wait on an earlier one): event disambiguation below must only trust
+  # events for the incarnation this run is waiting on.
+  juids="$(kubectl -n "$NAMESPACE" get jobs -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.uid} {end}' 2>/dev/null || true)"
   log "Waiting for setup jobs:"
   for j in $jobs; do info "$j"; done
   local seen reapplied
   for j in $jobs; do
     deadline=$(( $(date +%s) + JOB_TIMEOUT ))
-    seen=false reapplied=false
+    seen=false reapplied=false uid=""
+    for spec in $juids; do [ "${spec%%=*}" = "$j" ] && uid="${spec#*=}"; done
     while :; do
       # One API call for existence AND conditions: separate reads could
       # race the TTL controller (job completes and is collected between
@@ -763,6 +788,7 @@ wait_for_jobs() { # [glob list]
             # We polled this job every 10s and never observed Complete;
             # TTL (60s after finish) cannot outrun that -- something
             # external deleted it, or it failed and was collected.
+            [ "$reapplied" = true ] && die "job $j (already re-applied by this run) disappeared without an observed Complete condition -- externally deleted mid-run? investigate before re-running"
             die "job $j disappeared without an observed Complete condition -- externally deleted? Re-run '$0 run-job $j' to re-apply it"
           fi
           # Never seen alive: either it completed and was TTL-collected
@@ -774,20 +800,12 @@ wait_for_jobs() { # [glob list]
           # job-controller events; without positive evidence of success,
           # re-apply the job (they are idempotent) rather than proceed on
           # schemas/table configs that may never have been applied.
-          reasons=" $(job_event_reasons "$j") "
+          reasons=" $(job_event_reasons "$j" "$uid") "
           case "$reasons" in
             *" Completed "*) info "$j: gone (completed + TTL-collected)"; break ;;
+            *" BackoffLimitExceeded "*) retry_job_once "$j" "exhausted its backoff limit and was GC'd" ;;
+            *) retry_job_once "$j" "gone without evidence of success" ;;
           esac
-          [ "$reapplied" = true ] && die "job $j failed again after re-apply -- inspect the pod events/logs in namespace $NAMESPACE"
-          case "$reasons" in
-            *" BackoffLimitExceeded "*)
-              warn "$j: exhausted its backoff limit and was GC'd -- re-applying from the release manifest" ;;
-            *)
-              warn "$j: gone without evidence of success -- re-applying from the release manifest" ;;
-          esac
-          reapply_job "$j"
-          reapplied=true seen=false
-          deadline=$(( $(date +%s) + JOB_TIMEOUT ))
           sleep 10; continue
         fi
         # Transient API error: keep polling until the deadline, don't
@@ -798,15 +816,11 @@ wait_for_jobs() { # [glob list]
       seen=true
       case " $jout " in
         *" Failed=True "*)
-          [ "$reapplied" = true ] && die "job $j failed again after re-apply -- inspect with: kubectl -n $NAMESPACE logs job/$j --all-containers"
           # Expected on large clusters (see above): the job exhausted its
           # retries waiting on a component this script had not restarted
           # yet. Its dependencies are up by the time we wait on it, so one
           # fresh run is the fix, not an abort.
-          warn "$j: Failed (backoff limit exhausted while earlier restart phases ran) -- re-applying from the release manifest"
-          reapply_job "$j"
-          reapplied=true seen=false
-          deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+          retry_job_once "$j" "Failed (backoff limit exhausted while earlier restart phases ran)"
           ;;
         *" Complete=True "*) info "$j: complete"; break ;;
       esac
