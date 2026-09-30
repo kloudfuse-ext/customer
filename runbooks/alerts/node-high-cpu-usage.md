@@ -108,7 +108,7 @@ To break down CPU usage by service in the Metrics explorer:
 
 ```promql
 avg by (kube_deployment)(
-  system_cpu_user{kfuse="true", kube_namespace="kfuse"}
+  container_cpu_usage{kfuse="true", kube_namespace="kfuse"}
 )
 ```
 
