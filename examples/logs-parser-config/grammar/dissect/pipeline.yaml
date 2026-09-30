@@ -1,0 +1,8 @@
+- parser:
+    dissect:
+      args:
+        - tokenizer: '%{sourceIp} - - [%{timestamp}] "%{requestMethod} %{uri} %{_}" %{responseCode} %{contentLength}'
+      conditions:
+        - matcher: "#source"
+          value: "nginx"
+          op: "=="
