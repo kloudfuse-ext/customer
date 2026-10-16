@@ -1,0 +1,5 @@
+- transform:
+    args:
+      - action: "facet_to_label_map"
+      - sourceLabels: "@eventSource"
+      - targetLabel: "source"

@@ -1,0 +1,3 @@
+- skipAutoFacet:
+    args:
+      maxFacetsCount: 100

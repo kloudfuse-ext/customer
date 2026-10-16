@@ -1,0 +1,5 @@
+- relabel:
+    args:
+      - action: "keep"
+      - sourceLabels: "@level"
+      - regex: "ERROR"
