@@ -7,7 +7,7 @@ from typing import Tuple
 import requests
 from loguru import logger as log
 from requests.auth import HTTPBasicAuth
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 # Set logging level to INFO
 log.remove()
@@ -231,10 +231,12 @@ class GrafanaClient:
             return self._get_folder_uid_by_path(folder_name)
 
         # First, try to find existing folder at root level
-        find_folder_api = "/api/folders"
-        folders_response = self._http_get_request_to_grafana(find_folder_api)
-        for f in folders_response[0]:
-            if f['title'] == folder_name or f["title"] is None:
+        folders_response, status = self._http_get_request_to_grafana("/api/folders")
+        if not status:
+            log.error("Failed to list folders while looking up '{}'", folder_name)
+            return None
+        for f in folders_response:
+            if f.get('title') == folder_name:
                 return f['uid']
 
         return None
@@ -322,29 +324,27 @@ class GrafanaClient:
 
         return self._http_post_request_to_grafana(path=path, post_data=json.dumps(rule_group_response))
 
-    def _list_alerts(self, folder_name: str) -> tuple[Optional[List], Optional[str]]:
-        """List all alerts in a Grafana folder.
-        
-        Args:
-            folder_name: Name of the folder to list alerts from
-            
+    def _list_alert_groups(self, folder_uid: str, folder_name: str) -> tuple[Optional[List], Optional[str]]:
+        """List the rule groups in a Grafana folder.
+
+        Grafana keys the Ruler response by folder title (or full path for nested
+        folders). Since we query by folder UID the response holds exactly one
+        namespace, so we take its value instead of guessing the key.
+
         Returns:
-            tuple: (alerts_list, error_message)
-                - alerts_list: List of alerts if successful, None if failed
-                - error_message: Error description if failed, None if successful
+            (rule_groups, error_message); rule_groups is [] for a folder without rules.
         """
-        folder_uid = self._get_alert_folder_uid(folder_name)
-        if not folder_uid:
-            return None, f"Folder not found: {folder_name}"
-
-        log.debug("[ListAlert] Folder UID={0}, Name={1}".format(folder_uid, folder_name))
         path = f"/api/ruler/grafana/api/v1/rules/{folder_uid}"
-        response = self._http_get_request_to_grafana(path)
+        response, success = self._http_get_request_to_grafana(path)
+        if not success:
+            return None, f"Failed to fetch alerts from folder: {folder_name} (status={response.get('status')})"
         log.debug("Response=\n{}", json.dumps(response, indent=2, sort_keys=True))
-        if not response:
-            return None, f"Failed to fetch alerts from folder: {folder_name}"
-
-        return response, None
+        if not isinstance(response, dict) or not response:
+            return [], None
+        if len(response) > 1:
+            log.warning("Ruler API returned {} namespaces for folder {}; using all of them",
+                        len(response), folder_name)
+        return [group for groups in response.values() for group in groups], None
 
     def _post_rule_group(self, folder_uid: str, rule_group_data: dict) -> bool:
         """Post a rule group to Grafana using the Ruler API.
@@ -388,12 +388,12 @@ class GrafanaClient:
 
     def delete_alert(self, folder_name, alert_name, delete_all=False):
         """Delete alert from Grafana folder using the Ruler API.
-        
+
         Args:
-            folder_name: Name of the Grafana folder containing the alert
+            folder_name: Name (or nested path) of the Grafana folder containing the alert
             alert_name: Name of the specific alert to delete (ignored if delete_all=True)
             delete_all: If True, deletes all alerts in the folder
-            
+
         Returns:
             bool: True if deletion was successful, False otherwise
         """
@@ -402,50 +402,41 @@ class GrafanaClient:
             folder_name,
             delete_all
         ))
-        
-        # Get folder UID
+
         folder_uid = self._get_alert_folder_uid(folder_name)
         if folder_uid is None:
             log.error("Folder not found: {0}".format(folder_name))
             return False
-            
-        # List existing alerts
-        existing_alerts, error = self._list_alerts(folder_name)
+
+        groups, error = self._list_alert_groups(folder_uid, folder_name)
         if error:
             log.error(error)
             return False
-        
-        # Handle case where no alerts exist
-        if existing_alerts is None or existing_alerts[0] == {} or folder_name not in existing_alerts[0]:
+
+        if not groups:
             if delete_all:
                 log.info("No alerts found in folder '{0}' - nothing to delete".format(folder_name))
                 return True
-            else:
-                log.warning("Alert '{0}' was not found - no alerts in folder '{1}'".format(alert_name, folder_name))
-                return False
-            
+            log.warning("Alert '{0}' was not found - no alerts in folder '{1}'".format(alert_name, folder_name))
+            return False
+
         success_count = 0
-        total_groups = len(existing_alerts[0][folder_name])
-        
-        # Process each rule group in the folder
-        for group_index, rule_group in enumerate(existing_alerts[0][folder_name]):
+        total_groups = len(groups)
+
+        for group_index, rule_group in enumerate(groups):
             group_name = rule_group.get("name", f"group_{group_index}")
-            
+
             if delete_all:
-                # For delete_all, empty the rules array
                 log.info("Deleting all alerts from rule group '{0}'".format(group_name))
                 rule_group["rules"] = []
-                
-                # Post the empty rule group
                 if self._post_rule_group(folder_uid, rule_group):
                     success_count += 1
                 else:
                     log.error("Failed to delete alerts from rule group '{0}'".format(group_name))
             else:
-                # For single alert deletion, filter out the specific alert
                 new_rules = []
                 alert_found = False
-                
+
                 for rule in rule_group.get("rules", []):
                     rule_title = rule.get("grafana_alert", {}).get("title", "")
                     if rule_title != alert_name:
@@ -453,93 +444,123 @@ class GrafanaClient:
                     else:
                         log.info("Found alert '{0}' in group '{1}'".format(rule_title, group_name))
                         alert_found = True
-                
-                # Only update if we found the alert
+
                 if alert_found:
-                    # Update the rule group with remaining rules (even if empty)
                     rule_group["rules"] = new_rules
-                    
-                    # Post the updated rule group
                     if self._post_rule_group(folder_uid, rule_group):
                         success_count += 1
                     else:
                         log.error("Failed to update rule group '{0}'".format(group_name))
                         return False
-                            
-        # Check results
+
         if delete_all:
             if success_count == total_groups:
                 log.info("Successfully deleted all alerts from {0} rule groups in folder '{1}'".format(
                     total_groups, folder_name))
                 return True
-            else:
-                log.error("Failed to delete alerts from some rule groups: {0}/{1} succeeded".format(
-                    success_count, total_groups))
-                return False
-        else:
-            if success_count == 0:
-                log.warning("Alert '{0}' was not found in any rule group in folder '{1}'".format(
-                    alert_name, folder_name))
-                return False
-            else:
-                log.info("Successfully deleted alert '{0}' from folder '{1}'".format(alert_name, folder_name))
-                return True
+            log.error("Failed to delete alerts from some rule groups: {0}/{1} succeeded".format(
+                success_count, total_groups))
+            return False
 
-    def download_alert(self, folder_name, alert_name, all_alerts=False):
-        """Download alert."""
-        log.debug("Download alert: {0} from folder={1}".format(
-            alert_name,
-            folder_name,
-        ))
+        if success_count == 0:
+            log.warning("Alert '{0}' was not found in any rule group in folder '{1}'".format(
+                alert_name, folder_name))
+            return False
+        log.info("Successfully deleted alert '{0}' from folder '{1}'".format(alert_name, folder_name))
+        return True
+
+    def download_alert(self, folder_name, alert_name):
+        """Download the rule group containing `alert_name`, filtered to that alert.
+
+        Returns:
+            (rule_group, True) on success, (None, False) otherwise.
+        """
+        log.debug("Download alert: {0} from folder={1}".format(alert_name, folder_name))
         folder_uid = self._get_alert_folder_uid(folder_name)
         if folder_uid is None:
             log.error("Folder not found: {0}".format(folder_name))
             return None, False
-        existing_alerts, error = self._list_alerts(folder_name)
+        groups, error = self._list_alert_groups(folder_uid, folder_name)
         if error:
             log.error(error)
             return None, False
 
-        new_rules = []
+        for group in groups:
+            matching = [r for r in group.get("rules", [])
+                        if r.get("grafana_alert", {}).get("title") == alert_name]
+            if matching:
+                group["rules"] = matching
+                return group, True
 
-        rule_group_index = 0
-        try: 
-            for index, group in enumerate(existing_alerts[0][folder_name]):
-                for r in group["rules"]:
-                    rule_title = r["grafana_alert"]["title"]
-                    if all_alerts or rule_title == alert_name:
-                        log.debug("Keeping alert: {0}".format(rule_title))
-                        new_rules.append(r)
-                        rule_group_index = index
-                    else:
-                        log.debug("Skipping alert: {0}".format(rule_title))
-        except KeyError:
-            # Skip this if the key does not exist
-            log.debug("KeyError: Skipping folder_name={} as it does not exist in existing_alerts", folder_name)
-            return None, False
+        log.warning("Alert not found: {0}".format(alert_name))
+        return None, False
 
-        if len(new_rules) == 0:
-            log.warning("Alert not found: {0}".format(alert_name))
-            return None, False            
-
-        existing_alerts[0][folder_name][rule_group_index]["rules"] = new_rules
-        return existing_alerts[0][folder_name][rule_group_index], True
-    
     def download_alerts_folder(self, folder_name):
-        log.debug("Download all alerts from folder={0}".format(
-            folder_name,
-        ))
+        """Download all rule groups of a folder given by name or nested path."""
+        log.debug("Download all alerts from folder={0}".format(folder_name))
         folder_uid = self._get_alert_folder_uid(folder_name)
         if folder_uid is None:
             log.error("Folder not found: {0}".format(folder_name))
             return None, False
-        existing_alerts, error = self._list_alerts(folder_name)
+        return self.download_alerts_by_folder_uid(folder_uid, folder_name)
+
+    def download_alerts_by_folder_uid(self, folder_uid, folder_label):
+        """Download all rule groups of a folder identified by UID (safe for nested/duplicate titles)."""
+        groups, error = self._list_alert_groups(folder_uid, folder_label)
         if error:
             log.error(error)
             return None, False
-        
-        return existing_alerts, True
-    
+        return groups, True
+
+    def get_version(self) -> Optional[str]:
+        """Return the Grafana version string (e.g. '12.4.2'), or None if unavailable."""
+        health, success = self._http_get_request_to_grafana("/api/health")
+        if success and isinstance(health, dict):
+            return health.get("version")
+        return None
+
+    def get_major_version(self) -> Optional[int]:
+        version = self.get_version()
+        try:
+            return int(version.split(".")[0])
+        except (AttributeError, ValueError):
+            return None
+
+    def get_contact_point_names(self) -> Optional[set]:
+        """Names of contact points on the target, or None if they could not be listed."""
+        response, success = self._http_get_request_to_grafana("/api/v1/provisioning/contact-points")
+        if not success:
+            return None
+        return {cp.get("name") for cp in response}
+
+    def library_panel_exists(self, uid: str) -> bool:
+        # Direct request: a 404 is the expected answer for a new panel, not an error to log.
+        auth = None if self._auth_token else HTTPBasicAuth(self._username, self._password)
+        response = requests.get(f"{self._scheme}://{self._server}/api/library-elements/{uid}",
+                                auth=auth, headers=self._headers, timeout=30, verify=self.verify)
+        return response.status_code == 200
+
+    def get_library_panel(self, uid: str) -> Optional[dict]:
+        response, success = self._http_get_request_to_grafana(f"/api/library-elements/{uid}")
+        if not success:
+            return None
+        return response.get("result")
+
+    def upsert_library_panel(self, panel: dict, folder_uid: Optional[str]) -> bool:
+        """Create a library panel, keeping its UID. Existing panels are left untouched."""
+        uid = panel.get("uid")
+        if uid and self.library_panel_exists(uid):
+            log.debug("Library panel {} already exists", uid)
+            return True
+        payload = {
+            "uid": uid,
+            "name": panel.get("name"),
+            "model": panel.get("model"),
+            "kind": panel.get("kind", 1),
+            "folderUid": folder_uid,
+        }
+        return self._http_post_request_to_grafana("/api/library-elements", post_data=json.dumps(payload))
+
     def _get_datasource_uid_map(self):
         """Fetch all datasources and return a map of name (lowercase) to UID."""
         datasources, success = self._http_get_request_to_grafana("/api/datasources")
@@ -548,61 +569,53 @@ class GrafanaClient:
             return {}
         return {ds["name"].lower(): ds["uid"] for ds in datasources if "name" in ds and "uid" in ds}
     
-    def upload_dashboard(self, dashboard_data, folder_name):
-        """Uploads a single dashboard to the specified Grafana folder."""
-        created, folder_id = self._create_alert_folder_if_not_exists(folder_name)
-        if not created:
+    def upload_dashboard(self, dashboard_data, folder_name) -> bool:
+        """Uploads a single dashboard to the specified Grafana folder (nested paths allowed).
+
+        Returns:
+            bool: True if the dashboard was uploaded.
+        """
+        created, folder_uid = self._create_alert_folder_if_not_exists(folder_name)
+        if not created or folder_uid is None:
             log.error("Failed to create folder={0}".format(folder_name))
             return False
-        # folder_id = self._get_alert_folder_uid(folder_name)
-        if folder_id is None:
-            log.error("Invalid folder name. Aborting upload.")
-            return
-        
-        # with open(dashboard_path, "r") as file:
-        #     dashboard_data = json.load(file)
-        
-        # Ensure the dashboard structure
-        dashboard_data["id"] = "null"
+
+        # Let Grafana assign the numeric id; uid + overwrite makes the upload an upsert.
+        dashboard_data["id"] = None
         payload = {
             "dashboard": dashboard_data,
-            "folderUid": folder_id,
+            "folderUid": folder_uid,
             "overwrite": True
         }
-        
-        status = self._http_post_request_to_grafana(f"/api/dashboards/db", post_data=json.dumps(payload))
-        # response = requests.post(f"{GRAFANA_URL}/api/dashboards/db", headers=HEADERS, json=payload)
-        
-        if status:
-            title = dashboard_data.get("title", "Untitled")
-            log.info(f"Successfully uploaded '{title}'. to folder '{folder_name}'.")
-        else:
-            log.error(f"Failed to upload dashboard")
 
-    def __get_dashboard_uid_by_name(self, dashboard_name):
-        """Fetches the UID of a dashboard given its name."""
-        response, status = self._http_get_request_to_grafana(path="/api/search")
-        try:
-            
-            dashboards = response
-            for dashboard in dashboards:
-                if dashboard["title"] == dashboard_name:
-                    return dashboard["uid"]
-        except requests.exceptions.RequestException as e:
-            log.error(f"Error fetching dashboards: {e}")
-        except json.JSONDecodeError:
-            log.error("Error: Received unexpected response format (not JSON). Check authentication and API URL.")
-        return None
-    
-    def get_dashboard_uids_by_folder(self, folder_name):
-        """Fetches the UIDs of all dashboards in a given folder."""
-        folder_id = self._get_alert_folder_uid(folder_name)
-        response, status = self._http_get_request_to_grafana(path=f"/api/search?folderUIDs={folder_id}")
-        if status:
-            return [dashboard["uid"] for dashboard in response]
-        else:
-            log.error(f"Error fetching dashboards in folder {folder_id}")
-            return []
+        title = dashboard_data.get("title", "Untitled")
+        if self._http_post_request_to_grafana("/api/dashboards/db", post_data=json.dumps(payload)):
+            log.info(f"Successfully uploaded '{title}' to folder '{folder_name}'.")
+            return True
+        log.error(f"Failed to upload dashboard '{title}'")
+        return False
+
+    def find_dashboard_uid(self, dashboard_name, folder_name=None):
+        """Find the UID of a dashboard by exact title.
+
+        When folder_name resolves to a folder, only that folder is searched. If the
+        folder cannot be resolved we fall back to searching every folder.
+        """
+        path = "/api/search?type=dash-db&limit=5000&query=" + quote(dashboard_name)
+        folder_uid = self._get_alert_folder_uid(folder_name) if folder_name else None
+        if folder_uid:
+            path += f"&folderUIDs={folder_uid}"
+        elif folder_name:
+            log.warning("[!] Folder '{}' not found; searching all folders for '{}'", folder_name, dashboard_name)
+        response, success = self._http_get_request_to_grafana(path=path)
+        if not success:
+            return None
+        matches = [d["uid"] for d in response
+                   if d.get("type") == "dash-db" and d.get("title") == dashboard_name]
+        if len(matches) > 1:
+            log.warning("[!] {} dashboards are titled '{}'; using the first (uid={})",
+                        len(matches), dashboard_name, matches[0])
+        return matches[0] if matches else None
 
     def get_all_folders_recursive(self):
         """Gets all folders including nested ones recursively."""
@@ -637,13 +650,6 @@ class GrafanaClient:
     def _get_nested_folders(self, parent_uid, parent_path):
         """Recursively get nested folders under a parent folder."""
         nested_folders = []
-
-        # Get folder details including children
-        folder_detail_api = f"/api/folders/{parent_uid}"
-        folder_details, status = self._http_get_request_to_grafana(folder_detail_api)
-
-        if not status:
-            return nested_folders
 
         # Search for items in this folder
         search_api = f"/api/search?folderUIDs={parent_uid}&type=dash-folder"
@@ -695,17 +701,18 @@ class GrafanaClient:
         return all_dashboards
 
 
-    def download_dashboard(self, dashboard_identifier, is_uid=False):
-        """Downloads a single dashboard by UID or name."""
-        # if by_name:
-        if not is_uid:
-            dashboard_uid = self.__get_dashboard_uid_by_name(dashboard_identifier)
-        else:
+    def download_dashboard(self, dashboard_identifier, is_uid=False, folder_name=None):
+        """Downloads a single dashboard by UID or title (optionally scoped to a folder)."""
+        if is_uid:
             dashboard_uid = dashboard_identifier
-        
+        else:
+            dashboard_uid = self.find_dashboard_uid(dashboard_identifier, folder_name)
+            if dashboard_uid is None:
+                log.error("Dashboard not found: {}", dashboard_identifier)
+                return None, False
+
         response_json, status = self._http_get_request_to_grafana(path=(f"/api/dashboards/uid/{dashboard_uid}"))
         if status:
             return response_json, True
-        else:   
-            log.error("Failed to fetch dashboard data from Grafana")
-            return None, False
+        log.error("Failed to fetch dashboard data from Grafana")
+        return None, False

@@ -4,10 +4,14 @@ import argparse
 import json
 import os
 import sys
+import tarfile
+import zipfile
 from typing import Optional, Union, Tuple
 
 from loguru import logger as log
 
+from common.archive import extracted, is_archive, output_target, safe_name
+from common.datasources import DatasourceRemapper, parse_overrides
 from common.grafana_client import GrafanaClient
 
 
@@ -70,6 +74,10 @@ def parse_args():
             -p password \
             -f "placeholder"
 
+        # Compressed bundles (.zip, .tar.gz, .tgz) work for -d/-m uploads and any download:
+        python alert.py download -m -o /path/to/alerts.zip -f placeholder -a ... -u admin -p password
+        python alert.py upload -m /path/to/alerts.zip -f placeholder -a ... -u admin -p password
+
         # Delete Operations
         # ----------------
         # Delete single alert named "Alert Name" from a folder named "My Alert Folder" in Grafana/Alerts tab:
@@ -129,6 +137,13 @@ def parse_args():
         help="Verify SSL certificate (default: True)"
     )
 
+    parent_parser.add_argument(
+        "--datasource-uid-map",
+        action="append",
+        metavar="OLD_UID=NEW_UID",
+        help="Rewrite datasource UID OLD_UID to NEW_UID on upload (repeatable)"
+    )
+
     # Main parser
     parser = argparse.ArgumentParser(
         description="Grafana Alert Management Tool"
@@ -158,12 +173,12 @@ def parse_args():
     upload_mode.add_argument(
         '-d',
         '--directory',
-        help='Upload all JSON files from directory'
+        help='Upload all JSON files from a directory or .zip/.tar.gz/.tgz archive into the -f folder'
     )
     upload_mode.add_argument(
         '-m',
         '--multi-directory',
-        help='Directory containing multiple subdirectories with alerts'
+        help='Directory or .zip/.tar.gz/.tgz archive holding a folder tree; each directory path becomes a (nested) Grafana folder'
     )
 
     # Download command (similar structure)
@@ -177,7 +192,7 @@ def parse_args():
         '-o',
         '--output',
         required=True,
-        help='Output file path to save alert configuration'
+        help='Output file, or directory for -d/-m. A .zip/.tar.gz/.tgz path writes a compressed archive'
     )
     download_mode = download_parser.add_mutually_exclusive_group(
         required=True
@@ -192,13 +207,13 @@ def parse_args():
         '-d',
         '--directory',
         action='store_true',
-        help='Download all alerts to directory'
+        help='Download all alerts of the -f folder (nested path like parent/child allowed)'
     )
     download_mode.add_argument(
         '-m',
         '--multi-directory',
         action='store_true',
-        help='Download alerts from all Grafana folders'
+        help='Download alerts from all Grafana folders, preserving the nested folder tree'
     )
 
     # Delete command (similar structure)
@@ -272,137 +287,161 @@ class AlertManager(object):
 
 
 class UploadAlert(AlertManager):
-    def __init__(self, grafana_client: GrafanaClient, alert_folder_name: str):
+    # Rule fields introduced in newer Grafana majors. They are dropped when the
+    # target runs an older major so a bundle exported from a newer Kloudfuse
+    # release can still be imported.
+    NEWER_RULE_FIELDS = {"missing_series_evals_to_resolve": 12}
+
+    def __init__(self, grafana_client: GrafanaClient, alert_folder_name: str, datasource_overrides=None):
         super().__init__(
             grafana_client=grafana_client,
             alert_folder_name=alert_folder_name
         )
+        self._overrides = datasource_overrides or {}
+        self._remapper = None
+        self._grafana_major = None
+        self._contact_points = None
+        self._missing_receivers = set()
+
+    def _prepare_target_info(self):
+        """Look up what is needed to adapt rules to the target Grafana (once)."""
+        if self._remapper is not None:
+            return
+        ds_uid_map = self.gc._get_datasource_uid_map()
+        if not ds_uid_map:
+            log.warning("[!] Could not list datasources on the target; datasource UIDs will not be remapped")
+        self._remapper = DatasourceRemapper(ds_uid_map, self._overrides)
+        self._grafana_major = self.gc.get_major_version()
+        log.debug("Target Grafana major version: {}", self._grafana_major)
+        self._contact_points = self.gc.get_contact_point_names()
 
     def process_args(self, single_file, directory, multi_directory):
-        if single_file:
-            ok = self._create_alert_from_one_file(single_file)
-        elif directory:
-            ok = self._create_alert_from_dir(directory)
-        elif multi_directory:
-            ok = self._create_alerts_from_multi_dir(multi_directory)
-        else:
-            log.error("Invalid arguments provided.")
+        try:
+            if single_file:
+                if is_archive(single_file):
+                    log.error("[X] -s takes a single JSON file; use -d or -m for archives.")
+                    exit(1)
+                ok = self._create_alert_from_one_file(single_file)
+            elif directory:
+                with extracted(directory) as path:
+                    ok = self._create_alert_from_dir(path)
+            elif multi_directory:
+                with extracted(multi_directory) as path:
+                    ok = self._create_alerts_from_multi_dir(path)
+            else:
+                log.error("Invalid arguments provided.")
+                exit(1)
+        except (ValueError, OSError, zipfile.BadZipFile, tarfile.TarError) as e:
+            log.error("[X] Cannot read archive: {}", e)
             exit(1)
+        if self._missing_receivers:
+            log.warning("[!] Contact point(s) not found on the target: {}. Alerts routed to them will not notify "
+                        "until they are created.", ", ".join(sorted(self._missing_receivers)))
         if ok is False:
             log.error("[X] Alert upload failed; see errors above.")
             exit(1)
 
-    @staticmethod
-    def _process_rules(file_content: dict) -> list:
+    def _process_rules(self, file_content: dict) -> dict:
         rules = file_content.get("rules")
         if not rules:
             log.error("No rules found in alert config.")
             exit(1)
-        # Remove uid & namespace_uid fields from each rule as they will not allow overriding existing rules
+        self._prepare_target_info()
         for rule in rules:
             grafana_alert = rule.get("grafana_alert")
-            try:
-                grafana_alert.pop("uid", None)
-            except AttributeError:
-                log.debug("No uid or  found in alert config.")
-            try:
-                grafana_alert.pop("namespace_uid", None)
-            except AttributeError:
-                log.debug("No namespace_uid or  found in alert config.")
-        file_content["rules"] = rules
+            if not isinstance(grafana_alert, dict):
+                continue
+            # uid & namespace_uid tie a rule to the source instance and would stop
+            # the rule from overriding an existing one by title.
+            grafana_alert.pop("uid", None)
+            grafana_alert.pop("namespace_uid", None)
+            if self._grafana_major is not None:
+                for field, since in self.NEWER_RULE_FIELDS.items():
+                    if self._grafana_major < since and field in grafana_alert:
+                        log.warning("[!] Dropping '{}' from '{}': not supported by Grafana {}",
+                                    field, grafana_alert.get("title"), self._grafana_major)
+                        grafana_alert.pop(field)
+            receiver = (grafana_alert.get("notification_settings") or {}).get("receiver")
+            if receiver and self._contact_points is not None and receiver not in self._contact_points:
+                self._missing_receivers.add(receiver)
+        self._remapper.process(file_content)
+        self._remapper.warn_unknown("Alert group '{}'".format(file_content.get("name")))
         return file_content
+
+    def _upload_group(self, content: dict, folder: str, source: str) -> bool:
+        """Post one rule group to `folder`; returns success."""
+        stripped = self._process_rules(content)
+        success = self.gc.create_alert(folder, json.dumps(stripped))
+        if success:
+            log.info("[+] Uploaded alert group '{}' to folder '{}' ({} alert(s)) from {}",
+                     stripped.get("name"), folder, len(stripped.get("rules", [])), source)
+        else:
+            log.error("[X] Failed to upload alert group from {} to folder '{}'", source, folder)
+        return success
 
     def _create_alert_from_one_file(self, file_path: str) -> bool:
         file_content, err = self._valid_single_file_arg(file_path)
         if err:
             return False
         log.debug("file content: {}", file_content)
-        # Typically, existing rules have some fields associated with them
-        # which is added by grafana (say, uid, namespace_uid). This is either
-        # auto generated or done as a part of the grafana alert creation
-        # internal workflow.
-        stripped_file_content = self._process_rules(file_content)
+        return self._upload_group(file_content, self.alert_folder_name, file_path)
 
-        # Handle nested folders
-        success = self.gc.create_alert(
-            self.alert_folder_name,
-            json.dumps(stripped_file_content),
-        )
-
-        if success:
-            alert_count = len(stripped_file_content.get("rules", []))
-            log.info("[+] Uploaded alert group from: {} ({} alert(s))", file_path, alert_count)
-        else:
-            log.error("[X] Failed to upload alert from: {}", file_path)
-
-        return success
+    def _upload_files(self, file_paths, target_folder) -> bool:
+        all_ok = True
+        uploaded = 0
+        for file_path in file_paths:
+            if not file_path.endswith(".json"):
+                log.warning("[!] Skipping non-JSON file: {}", file_path)
+                continue
+            file_content, err = self._valid_single_file_arg(file_path)
+            if err:
+                log.error("[X] Failed to load alert config from {}. Err={}", file_path, err)
+                all_ok = False
+                continue
+            if self._upload_group(file_content, target_folder, file_path):
+                uploaded += 1
+            else:
+                all_ok = False
+        if uploaded:
+            log.info("[=] Uploaded {} alert group(s) to folder '{}'", uploaded, target_folder)
+        return all_ok
 
     def _create_alert_from_dir(self, directory, subdir=None):
         log.debug("Processing directory: {} {}", directory, subdir)
         if not os.path.isdir(directory):
             log.error("[X] Directory not found: {}", directory)
             return False
-
-        alert_count = 0
-        all_ok = True
-        for root, _, files in os.walk(directory):
-            for file in files:
-                alert_payload = {
-                    "interval": None,
-                    "name": None,
-                    "rules": []
-                }
-                if not file.endswith(".json"):
-                    log.warning("[!] Skipping non-JSON file: {}", file)
-                    continue
-                file_path = os.path.join(root, file)
-                log.debug("Processing file: {}", file_path)
-                file_content, err = self._valid_single_file_arg(file_path)
-                if err:
-                    log.error(
-                        "[X] Failed to load alert config from {}. Err={}",
-                        file_path, err,
-                    )
-                    exit(-1)
-                cleaned_file_content = self._process_rules(file_content)
-                if alert_payload["interval"] is None:
-                    alert_payload["interval"] = cleaned_file_content.get("interval")
-                if alert_payload["name"] is None:
-                    alert_payload["name"] = cleaned_file_content.get("name")
-                rules = cleaned_file_content.get("rules")
-                for rule in rules:
-                    alert_payload["rules"].append(rule)
-
-                # Upload to the appropriate folder
-                target_folder = subdir if subdir else self.alert_folder_name
-                success = self.gc.create_alert(target_folder, json.dumps(alert_payload))
-
-                if success:
-                    rule_count = len(alert_payload.get("rules", []))
-                    log.info("[+] Uploaded alert group: {} to folder: {} ({} alert(s))",
-                            alert_payload.get("name", file), target_folder, rule_count)
-                    alert_count += 1
-                else:
-                    log.error("[X] Failed to upload alert: {} to folder: {}", alert_payload.get("name", file), target_folder)
-                    all_ok = False
-
-        if alert_count > 0:
-            log.info("[=] Total alert groups uploaded from directory: {}", alert_count)
-        return all_ok
+        file_paths = sorted(
+            os.path.join(root, f) for root, _, files in os.walk(directory) for f in files
+        )
+        return self._upload_files(file_paths, subdir if subdir else self.alert_folder_name)
 
     def _create_alerts_from_multi_dir(self, root_directory: str):
+        """Upload a tree of folders; each directory's relative path becomes a (nested) Grafana folder."""
         if not os.path.exists(root_directory):
             log.error("[X] Root directory not found: {}", root_directory)
             return False
         if not os.path.isdir(root_directory):
             log.error("[X] Root directory is not a directory: {}", root_directory)
             return False
-        subdirectories = [d for d in os.listdir(root_directory) if os.path.isdir(os.path.join(root_directory, d))]
         all_ok = True
-        for subdir in subdirectories:
-            log.debug("Pre-Processing directory: {} {}", root_directory, subdir)
-            if self._create_alert_from_dir(os.path.join(root_directory, subdir), subdir) is False:
+        found = False
+        for current, dirs, files in os.walk(root_directory):
+            dirs.sort()
+            json_files = [os.path.join(current, f) for f in sorted(files) if f.endswith(".json")]
+            if not json_files:
+                continue
+            rel = os.path.relpath(current, root_directory)
+            if rel == ".":
+                log.warning("[!] Ignoring {} JSON file(s) at the top level; put them in a folder directory",
+                            len(json_files))
+                continue
+            found = True
+            folder = "/".join(rel.split(os.sep))
+            if not self._upload_files(json_files, folder):
                 all_ok = False
+        if not found:
+            log.warning("[!] No alert JSON files found under {}", root_directory)
         return all_ok
 
 
@@ -413,36 +452,36 @@ class DownloadAlert(AlertManager):
             alert_folder_name=alert_folder_name
         )
 
-    def _validate_file(self, file_path: str) -> bool:
+    def _prepare_file(self, file_path: str) -> bool:
         try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-            # Create file if it doesn't exist
-            if not os.path.exists(file_path):
-                log.debug("Creating new file: {}", file_path)
-                with open(file_path, 'w') as f:
-                    f.write('')
+            parent = os.path.dirname(file_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             return True
         except OSError as e:
-            log.error("Failed to create file {}: {}", file_path, str(e))
+            log.error("Failed to create directory for {}: {}", file_path, str(e))
             return False
 
     def process_args(self, alert_name, directory, output, multi_directory):
-        valid = self._validate_file(output)
-        if not valid:
-            log.error("Invalid output file path: {}", output)
+        try:
+            if alert_name:
+                with output_target(output, safe_name(alert_name) + ".json") as target:
+                    if not self._prepare_file(target):
+                        log.error("Invalid output file path: {}", output)
+                        exit(1)
+                    self._download_single_alert(alert_name, target)
+            elif directory:
+                with output_target(output) as target:
+                    self._download_alerts_from_folder(self.alert_folder_name, target)
+            elif multi_directory:
+                with output_target(output) as target:
+                    self._download_alerts_from_all_folders(target)
+            else:
+                log.error("No valid download option provided.")
+        except OSError as e:
+            log.error("[X] Cannot write output {}: {}", output, e)
             exit(1)
 
-        if alert_name:
-            self._download_single_alert(alert_name, output)
-        elif directory:
-            self._download_alerts_from_folder(self.alert_folder_name, output)
-        elif multi_directory:
-            self._download_alerts_from_all_folders(output)
-        else:
-            log.error("No valid download option provided.")
-    
     def _download_single_alert(self, alert_name, output):
         log.debug("Downloading alert: {}", alert_name)
         alert_payload, found = self.gc.download_alert(
@@ -456,105 +495,56 @@ class DownloadAlert(AlertManager):
         alert_count = len(alert_payload.get("rules", []))
         log.info("[+] Downloaded alert: {} ({} alert(s) in group)", alert_name, alert_count)
 
+    def _save_groups(self, groups, folder_output_path, folder_label):
+        os.makedirs(folder_output_path, exist_ok=True)
+        log.info("[*] Downloading {} alert group(s) from folder: {}", len(groups), folder_label)
+        for group in groups:
+            group_name = group.get("name")
+            output_path = os.path.join(folder_output_path, f"{safe_name(group_name or 'group')}.json")
+            self._save_alert_to_file(group, output_path)
+            log.info("[+] Downloaded alert group: {} ({} alert(s)) -> {}",
+                     group_name, len(group.get("rules", [])), output_path)
+
     def _download_alerts_from_folder(self, folder_name, output):
         log.debug("Downloading alerts from folder: {}", folder_name)
-
-        # Extract the leaf folder name for use as key in response
-        # The API returns alerts keyed by the leaf folder name, not the full path
-        leaf_folder_name = folder_name.split('/')[-1] if '/' in folder_name else folder_name
-
-        if '/' in folder_name:
-            log.info("[*] Searching for nested folder by path: '{}'", folder_name)
-
-        # Pass the full folder path to the client - it now supports nested paths
-        alert_payload, found = self.gc.download_alerts_folder(folder_name)
-
+        # Nested folders are addressed by path, e.g. "parent/child"
+        groups, found = self.gc.download_alerts_folder(folder_name)
         if not found:
-            log.error("Folder not found: {}", folder_name)
-            log.error("[X] No alerts found in folder: {}", folder_name)
+            log.error("[X] Could not download alerts from folder: {}", folder_name)
+            exit(1)
+        if not groups:
+            log.warning("[!] No alerts in folder: {}", folder_name)
             return
-
-        # payload for folder comes in the format ({'folder_name': [alert_rule_group]})
-        # For nested folders, Grafana returns the full path as the key
-        # For non-nested folders, it returns just the folder name
-        try:
-            if alert_payload and alert_payload[0]:
-                # Try full path first (works for nested folders)
-                alerts = alert_payload[0].get(folder_name, [])
-
-                # If not found, try leaf name (backwards compatibility for non-nested)
-                if not alerts and folder_name != leaf_folder_name:
-                    alerts = alert_payload[0].get(leaf_folder_name, [])
-
-                if alerts:
-                    log.info("[*] Found {} alert group(s) in '{}'", len(alerts), folder_name)
-                    for alert_rule_group in alerts:
-                        alert_group_name = alert_rule_group.get("name")
-                        alert_count = len(alert_rule_group.get("rules", []))
-                        output_path = os.path.join(output, f"{alert_group_name}.json")
-                        os.makedirs(output, exist_ok=True)
-                        self._save_alert_to_file(alert_rule_group, output_path)
-                        log.info("[+] Downloaded alert group: {} ({} alert(s))", alert_group_name, alert_count)
-                else:
-                    available_keys = list(alert_payload[0].keys())
-                    log.warning("[!] Could not find alerts using '{}' or '{}'. Available folder keys: {}",
-                               folder_name, leaf_folder_name, available_keys)
-                    log.warning("[!] No alerts in folder: {}", folder_name)
-            else:
-                log.warning("[!] Empty response from Grafana")
-        except Exception as e:
-            log.error("[X] Error downloading alerts from folder: {} Error: {}", folder_name, e)
+        self._save_groups(groups, output, folder_name)
 
     def _download_alerts_from_all_folders(self, output_dir):
         log.debug("Downloading all alerts from Grafana")
+        if os.path.isfile(output_dir):
+            log.error("[X] Output path exists and is a file, expected a directory: {}", output_dir)
+            exit(1)
+        os.makedirs(output_dir, exist_ok=True)
+
         all_folders = self.gc.get_all_folders_recursive()
-
-        log.debug("Output DIR: {}", output_dir)
-        if os.path.exists(output_dir) and os.path.isfile(output_dir):
-            # Remove the file
-            os.remove(output_dir)
-            log.debug("File {} has been removed.", output_dir)
-        else:
-            log.debug("File {} does not exist.", output_dir)
-
-        # Ensure output_dir is a directory
-        if not os.path.exists(output_dir):
-            log.debug("Creating directory: {}", output_dir)
-            os.makedirs(output_dir, exist_ok=True)
-        elif not os.path.isdir(output_dir):
-            log.error("[X] Output path exists and is not a directory: {}", output_dir)
-            return
-
-        processed_uids = set()  # Track processed folder UIDs to avoid duplicates
-
+        if not all_folders:
+            log.warning("[!] No folders found")
+        processed_uids = set()
+        failures = 0
         for folder in all_folders:
-            folder_uid = folder['uid']
-            folder_path = folder['path']
-
-            # Skip if we've already processed this folder
-            if folder_uid in processed_uids:
+            if folder['uid'] in processed_uids:
                 continue
+            processed_uids.add(folder['uid'])
 
-            processed_uids.add(folder_uid)
-
-            # Create directory structure matching folder hierarchy
-            folder_output_path = os.path.join(output_dir, folder_path)
-
-            # Get alerts from this specific folder
-            alert_payload, found = self.gc.download_alerts_folder(folder['title'])
-
-            if found and alert_payload:
-                alerts = alert_payload[0].get(folder['title'], [])
-                if alerts:
-                    log.info("[*] Downloading {} alert group(s) from folder: {}", len(alerts), folder_path)
-                    os.makedirs(folder_output_path, exist_ok=True)
-
-                    for alert_rule_group in alerts:
-                        alert_group_name = alert_rule_group.get("name")
-                        alert_count = len(alert_rule_group.get("rules", []))
-                        output_path = os.path.join(folder_output_path, f"{alert_group_name}.json")
-                        self._save_alert_to_file(alert_rule_group, output_path)
-                        log.info("[+] Downloaded alert group: {} ({} alert(s)) -> {}", alert_group_name, alert_count, folder_output_path)
+            # Query by UID: titles are not unique across nesting levels. The folder
+            # path becomes the directory tree, so nested folders round-trip on upload.
+            groups, found = self.gc.download_alerts_by_folder_uid(folder['uid'], folder['path'])
+            if not found:
+                failures += 1
+                continue
+            if groups:
+                self._save_groups(groups, os.path.join(output_dir, *folder['path'].split('/')), folder['path'])
+        if failures:
+            log.error("[X] Failed to download alerts from {} folder(s)", failures)
+            exit(1)
 
     def _save_alert_to_file(self, alert_payload, output_path):
         with open(output_path, 'w') as f:
@@ -619,11 +609,17 @@ if __name__ == "__main__":
         verify_ssl=args.verify_ssl,
     )
     alert_folder_name = args.alert_folder_name
+    try:
+        datasource_overrides = parse_overrides(getattr(args, "datasource_uid_map", None))
+    except ValueError as e:
+        log.error("[X] {}", e)
+        exit(1)
 
     if args.command == "upload":
         i = UploadAlert(
             grafana_client=grafana_client,
-            alert_folder_name=alert_folder_name
+            alert_folder_name=alert_folder_name,
+            datasource_overrides=datasource_overrides,
         )
         i.process_args(
             single_file=args.single_file,
