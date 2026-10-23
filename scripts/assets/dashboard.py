@@ -366,17 +366,22 @@ class DownloadDashboard(DashboardManager):
     def _download_all_dashboards_from_folder(self, folder_name, directory):
         log.debug("Downloading all dashboards from folder: {}", folder_name)
 
-        # Find all folders that match the name, path, or UID (there might be multiple with same path but different UIDs)
         matching_folders = []
-        all_folders = self.gc.get_all_folders_recursive()
-
-        for folder in all_folders:
-            # Match by title, path, or UID
-            if (folder['title'] == folder_name or
-                folder['path'] == folder_name or
-                folder['uid'] == folder_name):
-                matching_folders.append(folder)
-                log.info("[>] Found folder: {} (UID: {})", folder['path'], folder['uid'])
+        if '/' in folder_name:
+            # Resolve explicit paths directly, as alert downloads do.
+            folder_uid = self.gc._get_folder_uid_by_path(folder_name)
+            if folder_uid is not None:
+                matching_folders.append({'uid': folder_uid, 'path': folder_name})
+                log.info("[>] Found folder: {} (UID: {})", folder_name, folder_uid)
+        else:
+            # Preserve matching by title or UID across the folder hierarchy.
+            all_folders = self.gc.get_all_folders_recursive()
+            for folder in all_folders:
+                if (folder['title'] == folder_name or
+                    folder['path'] == folder_name or
+                    folder['uid'] == folder_name):
+                    matching_folders.append(folder)
+                    log.info("[>] Found folder: {} (UID: {})", folder['path'], folder['uid'])
 
         if not matching_folders:
             log.error("[X] Folder not found: {}", folder_name)
