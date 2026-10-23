@@ -10,7 +10,7 @@
 # for all stateful tiers (so nothing stateful restarts on its own), then
 # this script restarts pods in dependency order:
 #   [jobs: pgdb, kafka topics] -> zookeeper -> kafka controller -> kafka broker
-#     -> pinot controller -> [job: setup-pinot] -> pinot broker
+#     -> pinot broker -> pinot controller -> [job: setup-pinot]
 #     -> pinot server realtime/offline -> pinot minion
 # restarting only StatefulSets whose revision actually changed. The pinot
 # controller comes up on the new version BEFORE setup-pinot is awaited (new
@@ -33,6 +33,14 @@
 #   --recreate <glob>     Restart matching STS (name or class) by deleting all
 #                         pods at once instead of one-by-one (repeatable).
 #                         e.g. --recreate 'pinot-server-*' --recreate pinot-minion
+#   --recreate-together <glob,glob,...>
+#                         Recreate ALL matching STS (names or classes) as one
+#                         group: every stale pod across the group is deleted
+#                         in a single pass, then all are awaited (repeatable;
+#                         each flag is its own group). Grouping applies within
+#                         a restart phase: pinot-broker/controller restart
+#                         before setup-pinot, servers/minion after it.
+#                         e.g. --recreate-together 'pinot-server-*,pinot-minion'
 #   --force-restart <glob> Restart matching STS even if its revision is
 #                         unchanged (repeatable)
 #   --chart-dir <path>    Local chart dir for 'local' (default: <repo>/kfuse)
@@ -48,8 +56,9 @@
 #                         against the live release manifest; no changes made
 #
 # Classes (for --recreate / --force-restart / restart):
-#   zookeeper kafka-controller kafka-broker pinot-controller pinot-broker
+#   zookeeper kafka-controller kafka-broker pinot-broker pinot-controller
 #   pinot-server-realtime pinot-server-offline pinot-minion
+#   (zookeeper is always rolled one pod at a time, never recreated)
 
 set -euo pipefail
 # Disable pathname expansion: user-supplied globs (--recreate '*') and the
@@ -68,8 +77,9 @@ REGISTRY_HOST="us-east1-docker.pkg.dev"
 # The pinot controller restarts BEFORE we wait on setup-pinot: new table
 # configs can reference features only the new controller validates (e.g. new
 # minion task types), and the job retries (backoffLimit 100) until it's up.
-PRE_SETUP_CLASSES="zookeeper kafka-controller kafka-broker pinot-controller"
-POST_SETUP_CLASSES="pinot-broker pinot-server-realtime pinot-server-offline pinot-minion"
+# The pinot broker restarts before the pinot controller.
+PRE_SETUP_CLASSES="zookeeper kafka-controller kafka-broker pinot-broker pinot-controller"
+POST_SETUP_CLASSES="pinot-server-realtime pinot-server-offline pinot-minion"
 CLASS_ORDER="$PRE_SETUP_CLASSES $POST_SETUP_CLASSES"
 
 # Static-name jobs recreated by every upgrade (ttlSecondsAfterFinished: 60).
@@ -84,6 +94,7 @@ CHART_DIR="$REPO_ROOT/kfuse"
 VALUES_ARGS=""            # accumulated "-f <file>" args (paths must not contain spaces)
 SET_ARGS=""
 RECREATE_GLOBS=""
+RECREATE_GROUPS=""        # space-separated groups, each a comma-separated glob list
 FORCE_GLOBS=""
 JOB_TIMEOUT=1800
 POD_TIMEOUT=900
@@ -145,7 +156,7 @@ die()  { printf '\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
-usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -162,6 +173,7 @@ while [ $# -gt 0 ]; do
     -f) VALUES_ARGS="$VALUES_ARGS -f $2"; shift 2 ;;
     --set) SET_ARGS="$SET_ARGS --set $2"; shift 2 ;;
     --recreate) RECREATE_GLOBS="$RECREATE_GLOBS $2"; shift 2 ;;
+    --recreate-together) RECREATE_GROUPS="$RECREATE_GROUPS $2"; shift 2 ;;
     --force-restart) FORCE_GLOBS="$FORCE_GLOBS $2"; shift 2 ;;
     --chart-dir) CHART_DIR="$2"; shift 2 ;;
     --token) TOKEN_FILE="$2"; shift 2 ;;
@@ -278,6 +290,20 @@ matches_any() { # <name> <class> <glob list...>
     case "$class" in $g) return 0 ;; esac
   done
   return 1
+}
+
+# 1-based index of the first --recreate-together group matching <sts>/<class>,
+# or nothing. Zookeeper is never grouped (never mass-delete a quorum).
+recreate_group_of() { # <sts> <class>
+  local sts="$1" class="$2" grp i=0
+  [ "$class" = "zookeeper" ] && return 0
+  for grp in $RECREATE_GROUPS; do
+    i=$((i + 1))
+    # shellcheck disable=SC2046
+    if matches_any "$sts" "$class" $(printf '%s' "$grp" | tr ',' ' '); then
+      echo "$i"; return 0
+    fi
+  done
 }
 
 # helm upgrade returns when the API server accepts the spec; the StatefulSet
@@ -536,6 +562,23 @@ health_gate() { # <class> <pod> <replicas>
 # Restarts
 # ---------------------------------------------------------------------------
 
+# Pods of <sts> to restart: the stale ones, or every ordinal when forced.
+# Force-restart cycles ALL ordinals, not just stale ones: scale-up pods
+# created in Phase 1 are already on the new revision, but may have opened
+# consuming segments against the old schema before setup-pinot completed,
+# so a schema change must restart them too.
+restart_targets() { # <sts> <class> <replicas>
+  local sts="$1" class="$2" replicas="$3" pod out=""
+  # shellcheck disable=SC2086
+  if matches_any "$sts" "$class" $FORCE_GLOBS; then
+    pod=$((replicas - 1))
+    while [ "$pod" -ge 0 ]; do out="$out ${sts}-${pod}"; pod=$((pod - 1)); done
+    echo "$out"
+  else
+    stale_pods "$sts" "$replicas"
+  fi
+}
+
 restart_one_sts() { # <sts> <class> <replicas>
   local sts="$1" class="$2" replicas="$3" mode="rolling" stale pod old_uid uids spec
   wait_sts_observed "$sts"
@@ -543,17 +586,9 @@ restart_one_sts() { # <sts> <class> <replicas>
   matches_any "$sts" "$class" $RECREATE_GLOBS && mode="recreate"
   [ "$class" = "zookeeper" ] && mode="rolling"   # never mass-delete a quorum
 
-  stale="$(stale_pods "$sts" "$replicas")"
-  # Force-restart cycles ALL ordinals, not just stale ones: scale-up pods
-  # created in Phase 1 are already on the new revision, but may have opened
-  # consuming segments against the old schema before setup-pinot completed,
-  # so a schema change must restart them too.
+  stale="$(restart_targets "$sts" "$class" "$replicas")"
   # shellcheck disable=SC2086
-  if matches_any "$sts" "$class" $FORCE_GLOBS; then
-    info "$sts: force-restart -- cycling all $replicas pods"
-    pod=$((replicas - 1)); stale=""
-    while [ "$pod" -ge 0 ]; do stale="$stale ${sts}-${pod}"; pod=$((pod - 1)); done
-  fi
+  matches_any "$sts" "$class" $FORCE_GLOBS && info "$sts: force-restart -- cycling all $replicas pods"
   if [ -z "${stale// /}" ]; then
     info "$sts: up to date -- verifying all $replicas ordinals (readiness + health)"
     verify_component "$sts" "$class" "$replicas"
@@ -596,6 +631,75 @@ restart_one_sts() { # <sts> <class> <replicas>
   info "$sts: all $replicas replicas Ready and healthy on new revision"
 }
 
+# Recreates every StatefulSet in <list-file> ("sts class replicas" lines)
+# as one unit: the targets of all members are deleted in a single kubectl
+# call, so e.g. realtime servers, offline servers and minions come back
+# concurrently instead of one StatefulSet at a time. Readiness and health
+# are then gated per pod, as in restart_one_sts's recreate mode.
+restart_group() { # <list-file>
+  local list="$1" sts class replicas stale pods="" uids="" names="" pod spec
+  : > "$WORKDIR/group.plan"
+  while read -r sts class replicas; do
+    wait_sts_observed "$sts"
+    stale="$(restart_targets "$sts" "$class" "$replicas")"
+    # shellcheck disable=SC2086
+    matches_any "$sts" "$class" $FORCE_GLOBS && info "$sts: force-restart -- cycling all $replicas pods"
+    if [ -z "${stale// /}" ]; then
+      info "$sts: up to date -- verifying all $replicas ordinals (readiness + health)"
+    else
+      names="$names $sts"
+      pods="$pods$stale"
+    fi
+    echo "$sts $class $replicas $stale" >> "$WORKDIR/group.plan"
+  done < "$list"
+
+  if [ -n "${pods// /}" ]; then
+    log "Recreating together:$names"
+    info "pods:$pods"
+    # Same delete/wait contract as restart_one_sts's recreate mode: ordinal
+    # names only, PDBs bypassed, UIDs captured to detect the replacement.
+    for pod in $pods; do uids="$uids ${pod}=$(pod_uid "$pod")"; done
+    # shellcheck disable=SC2086
+    kubectl -n "$NAMESPACE" delete pod $pods --wait=false --ignore-not-found
+    for spec in $uids; do wait_pod_ready "${spec%%=*}" "${spec#*=}"; done
+  fi
+  # Health-gate the recreated pods, then converge the rest of each member
+  # (missing pods / scale-ups / up-to-date members).
+  while read -r sts class replicas stale; do
+    for pod in $stale; do health_gate "$class" "$pod" "$replicas"; done
+    verify_component "$sts" "$class" "$replicas" "$stale"
+    info "$sts: all $replicas replicas Ready and healthy on new revision"
+  done < "$WORKDIR/group.plan"
+}
+
+# Restarts StatefulSets from <list-file> for the given classes, in order.
+# A member of a --recreate-together group triggers the whole group (its
+# members among these classes) at the point the first member is reached.
+restart_from_list() { # <list-file> <class...>
+  local list="$1" class sts c replicas g gc s2 c2 r2 done_groups=" "
+  shift
+  for class in "$@"; do
+    while read -r sts c replicas; do
+      [ "$c" = "$class" ] || continue
+      g="$(recreate_group_of "$sts" "$c")"
+      if [ -z "$g" ]; then
+        restart_one_sts "$sts" "$c" "$replicas"
+        continue
+      fi
+      case "$done_groups" in *" $g "*) continue ;; esac
+      done_groups="$done_groups$g "
+      : > "$WORKDIR/group.list"
+      for gc in "$@"; do
+        while read -r s2 c2 r2; do
+          [ "$c2" = "$gc" ] && [ "$(recreate_group_of "$s2" "$c2")" = "$g" ] \
+            && echo "$s2 $c2 $r2" >> "$WORKDIR/group.list"
+        done < "$list"
+      done
+      restart_group "$WORKDIR/group.list"
+    done < "$list"
+  done
+}
+
 # Discovers managed STS, prints the full restart plan, and prompts once.
 # Sets PLAN_ANY=true when at least one component needs action.
 plan_restarts() {
@@ -614,10 +718,12 @@ plan_restarts() {
   for class in $CLASS_ORDER; do
     while read -r sts c replicas; do
       [ "$c" = "$class" ] || continue
-      local stale mode="rolling" action
+      local stale mode="rolling" action g
       # shellcheck disable=SC2086
       matches_any "$sts" "$c" $RECREATE_GLOBS && mode="recreate"
       [ "$c" = "zookeeper" ] && mode="rolling"
+      g="$(recreate_group_of "$sts" "$c")"
+      [ -n "$g" ] && mode="recreate-together #$g"
       stale="$(stale_pods "$sts" "$replicas")"
       # shellcheck disable=SC2086
       if matches_any "$sts" "$c" $FORCE_GLOBS; then action="$mode (forced, all $replicas)"
@@ -673,14 +779,8 @@ revert_strategies() {
 # discovery from plan_restarts. Staleness is recomputed per StatefulSet at
 # execution time, so an already-converged component is skipped.
 run_restart_classes() { # <class...>
-  local class sts c replicas
   [ -s "${DISCOVERED:-/dev/null}" ] || return 0
-  for class in "$@"; do
-    while read -r sts c replicas; do
-      [ "$c" = "$class" ] || continue
-      restart_one_sts "$sts" "$c" "$replicas"
-    done < "$DISCOVERED"
-  done
+  restart_from_list "$DISCOVERED" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -1046,7 +1146,7 @@ cmd_upgrade() {
   # Restart the control plane BEFORE waiting on setup-pinot: new table
   # configs may only validate against the new controller (e.g. new minion
   # task types like KfMergeTask); the job retries until the controller is up.
-  log "Phase 3a: control-plane restarts (zookeeper -> kafka -> pinot controller)"
+  log "Phase 3a: control-plane restarts (zookeeper -> kafka -> pinot broker -> pinot controller)"
   plan_restarts
   # shellcheck disable=SC2086
   run_restart_classes $PRE_SETUP_CLASSES
@@ -1064,7 +1164,7 @@ cmd_upgrade() {
     FORCE_GLOBS="$FORCE_GLOBS pinot-server-realtime pinot-server-offline"
   fi
 
-  log "Phase 3b: data-plane restarts (pinot broker -> servers -> minion)"
+  log "Phase 3b: data-plane restarts (pinot servers -> minion)"
   # shellcheck disable=SC2086
   run_restart_classes $POST_SETUP_CLASSES
 
@@ -1148,13 +1248,8 @@ cmd_restart() {
   acquire_lock
   # 'restart' implies the user wants a restart even if revisions are current.
   FORCE_GLOBS="$FORCE_GLOBS $pattern"
-  local class sts c replicas
-  for class in $CLASS_ORDER; do
-    while read -r sts c replicas; do
-      [ "$c" = "$class" ] || continue
-      restart_one_sts "$sts" "$c" "$replicas"
-    done < "$WORKDIR/sel.list"
-  done
+  # shellcheck disable=SC2086
+  restart_from_list "$WORKDIR/sel.list" $CLASS_ORDER
 }
 
 cmd_rollback() {
