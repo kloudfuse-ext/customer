@@ -48,6 +48,39 @@ You can authenticate to Grafana using either username/password (Basic Auth) or s
 * Service account tokens are recommended for automation and production environments.
 * Ensure that the API credentials or service account have the necessary permissions to manage alerts and dashboards.
 * The `-f` flag is required. It is a placeholder in some multi-directory operations.
+* See <<bundles>> for nested folders and compressed bundles, and <<migration>> for moving assets between releases.
+
+[[bundles]]
+== Nested Folders and Compressed Bundles
+
+Both scripts support Grafana nested folders and compressed bundles, so a whole folder tree can be moved between Kloudfuse releases or environments as a single file.
+
+* *Folder tree layout.* With `-m`, each directory's path relative to the root becomes a (nested) Grafana folder. `Top/Mid/Leaf/group.json` is uploaded to folder `Top` > `Mid` > `Leaf`, and folders are created as needed. A download with `-m` writes the same layout. With `-d` and `-s`, the `-f` value can be a nested path such as `Top/Mid`.
+* *Compressed bundles.* Anywhere an output path (`-o`) or an upload source (`-d`, `-m`) is expected, a `.zip`, `.tar.gz`, or `.tgz` path may be used instead of a directory. Archive paths in the bundle are relative to the root, with no wrapper directory. If you zip a directory yourself, the wrapper directory name becomes a top-level Grafana folder.
+* *Safety.* Archives containing path traversal (`../`), absolute paths, symlinks, or an excessive number of files or bytes are rejected.
+* Folder titles that contain `/` can't be represented in the directory layout.
+
+.Round trip a whole folder tree
+====
+[,code]
+----
+python alert.py download -m -o alerts.zip -f placeholder -a https://<source>/grafana --auth-token <token>
+python alert.py upload   -m alerts.zip   -f placeholder -a https://<target>/grafana --auth-token <token>
+
+python dashboard.py download -m -o dashboards.tar.gz -f placeholder -a https://<source>/grafana --auth-token <token>
+python dashboard.py upload   -m dashboards.tar.gz   -f placeholder -a https://<target>/grafana --auth-token <token>
+----
+====
+
+[[migration]]
+== Moving Assets Between Releases
+
+* *Datasource UIDs.* On upload, `${DS_<NAME>}` placeholders and empty datasource UIDs are mapped to the matching datasource on the target (empty means `kfusedatasource`). Any other UID that doesn't exist on the target is reported as a warning. Remap explicitly with the repeatable `--datasource-uid-map OLD_UID=NEW_UID` option.
+* *Grafana version differences.* Kloudfuse 3.4.x ships Grafana 11.6, 3.5 to 4.1 ship 12.3, and 4.2 and later (including 4.3.1) ship 12.4. When the target runs an older major version than the source, alert rule fields it doesn't know (for example `missing_series_evals_to_resolve`) are dropped with a warning. Dashboards are stored as-is; Grafana migrates the dashboard schema when it loads them.
+* *Library panels.* Dashboards that use library panels are downloaded together with the panels (in `_library_panels/` at the root of the output). They are created on the target first when you upload that bundle. Library panels referenced but not in the bundle must already exist on the target (a warning is printed otherwise). Downloading a single dashboard with `-s` doesn't export library panels.
+* *Contact points and notification policies* aren't exported, because Grafana redacts contact point secrets. Create them on the target first (see `apm_alerts/`). Uploading prints a warning for alert rules whose `notification_settings.receiver` doesn't exist on the target.
+* *Provisioned rules.* Rules created through the provisioning API (non-empty `provenance`) can't be overwritten through the Ruler API.
+* *Exit codes.* Both scripts exit non-zero when an upload fails.
 
 [[alerts]]
 == Manage Alerts
