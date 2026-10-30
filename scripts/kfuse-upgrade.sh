@@ -31,6 +31,9 @@
 # on the legacy segments, pause consumption until all segments seal, resume
 # from lastConsumed). Interactive runs are asked first; 'flush-rollup' runs
 # it on its own (e.g. after skipping it, or to finish an interrupted run).
+# The gate compares major.minor.patch, so clusters already on a 4.3.1 RC do
+# not get it on RC -> GA: run 'flush-rollup' by hand there. If the upgrade
+# succeeds but the flush does not, the script exits 3 (do not roll back).
 #
 # Options:
 #   -n <namespace>        Kubernetes namespace (default: kfuse)
@@ -116,13 +119,21 @@ SKIP_ROLLUP_FLUSH=false
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/kfuse-upgrade.XXXXXX")"
 LOCK_HELD=false
+ROLLUP_RESUME_POD=""      # controller pod, set while this run has the rollup table paused
+ROLLUP_FLUSH_FAILED=false
 cleanup() {
+  # Finish the resume even if the operator hits Ctrl-C again.
+  trap '' INT TERM
+  rollup_resume || true
   if [ "$LOCK_HELD" = true ]; then
     kubectl -n "$NAMESPACE" delete configmap "kfuse-upgrade-lock-$RELEASE" --ignore-not-found >/dev/null 2>&1 || true
   fi
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
+# bash skips the EXIT trap when killed by an untrapped signal.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Per-release mutation lock: two concurrent upgrade/rollback/restart runs
 # would interleave job deletion, pod deletion, and the RollingUpdate revert,
@@ -491,7 +502,7 @@ zk_quorum_check() { # <pod> <replicas>
   if [ "$replicas" -le 1 ]; then want='Mode: (leader|follower|standalone)'
   else want='Mode: (leader|follower)'; fi
   while :; do
-    mode="$(kubectl -n "$NAMESPACE" exec "$pod" -- bash -c 'echo srvr | timeout 3 nc -w 2 localhost 2181' 2>/dev/null \
+    mode="$(kubectl -n "$NAMESPACE" exec --request-timeout=60s "$pod" -- bash -c 'echo srvr | timeout 3 nc -w 2 localhost 2181' 2>/dev/null \
               | grep -Eo "$want" || true)"
     [ -n "$mode" ] && { info "$pod: $mode (in quorum)"; return 0; }
     tries=$((tries + 1))
@@ -516,7 +527,7 @@ kafka_quorum_check() { # <pod>
     # deployment's truststore material -- detect it from the pod env and
     # fall back to pod readiness with a warning instead of blocking every
     # upgrade on an unprobeable-but-healthy quorum.
-    out="$(kubectl -n "$NAMESPACE" exec "$pod" -- bash -c '
+    out="$(kubectl -n "$NAMESPACE" exec --request-timeout=120s "$pod" -- bash -c '
       case "$KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP" in
         *CONTROLLER:SSL*|*CONTROLLER:SASL_SSL*) echo KFUSE_TLS_CONTROLLER_LISTENER; exit 0 ;;
       esac
@@ -548,7 +559,7 @@ kafka_quorum_check() { # <pod>
 pinot_health() { # <pod> <url-path-with-port>
   local pod="$1" url="$2" tries=0 max=$(( POD_TIMEOUT / 5 ))
   while :; do
-    kubectl -n "$NAMESPACE" exec "$pod" -- curl -sf --max-time 5 "http://localhost:$url" >/dev/null 2>&1 \
+    kubectl -n "$NAMESPACE" exec --request-timeout=60s "$pod" -- curl -sf --max-time 5 "http://localhost:$url" >/dev/null 2>&1 \
       && { info "$pod: healthy ($url)"; return 0; }
     tries=$((tries + 1))
     [ "$tries" -eq 1 ] && info "waiting for $pod health ($url)..."
@@ -977,77 +988,167 @@ snapshot_schemas() { # <outfile>
 # ---------------------------------------------------------------------------
 # 4.3.1 moves kf_metrics_rollup from kf_metrics_rollup_topic onto new topics.
 # The table keeps consuming the legacy topic (partition ids < 10000; new
-# topics are numbered 10000+), but since nothing writes to it anymore its
-# consuming segments would never fill up and seal. Once the legacy segments
-# have caught up (lag 0), pause consumption -- which seals every consuming
+# topics are numbered 10000+), but nothing writes to it anymore: a legacy
+# consuming segment holding rows only seals at the time threshold, and until
+# then those rows are exposed to loss on restart (bugzilla#1794). Empty
+# segments never seal but hold no data. Once the legacy segments have caught
+# up (lag 0, offsets stable), pause consumption -- which seals every consuming
 # segment -- then resume from where each segment stopped. Pausing while
 # records are still unread would leave them in new consuming segments that
 # never seal, hence the lag wait first.
+#
+# The pause is table-wide (legacy and new topics), so any failure after it
+# must resume: ROLLUP_RESUME_POD is set before pausing and the EXIT trap
+# resumes while it is set. Resuming with a commit in flight is safe.
+# Functions here return non-zero rather than die: a flush failure must not
+# read as a failed upgrade.
 
 ROLLUP_TABLE="kf_metrics_rollup"
 ROLLUP_FLUSH_VERSION="4.3.1"
+ROLLUP_PAUSE_COMMENT="flush-legacy-rollup-topic"
 
 pinot_api() { # <controller-pod> <GET|POST> <path>
-  kubectl -n "$NAMESPACE" exec "$1" -- curl -sf --max-time 30 -X "$2" "http://localhost:9000$3"
+  kubectl -n "$NAMESPACE" exec --request-timeout=60s "$1" -- curl -sf --max-time 30 -X "$2" "http://localhost:9000$3"
 }
 
 # Prints the controller pod (ordinal 0) of the pinot alias that hosts
 # ROLLUP_TABLE (pinot or pinot-metrics, depending on the deployment), or
-# nothing if no controller has it.
+# nothing if every controller answered without it. Fails if a controller
+# could not be queried: that must not read as "table not here".
 rollup_controller() {
-  local sts class replicas
-  discover_sts > "$WORKDIR/rollup-sts.list"
+  local sts class replicas out failed=""
+  discover_sts > "$WORKDIR/rollup-sts.list" || return 1
   while read -r sts class replicas; do
     [ "$class" = "pinot-controller" ] || continue
-    if pinot_api "${sts}-0" GET /tables 2>/dev/null \
-         | jq -e --arg t "$ROLLUP_TABLE" '.tables | index($t)' >/dev/null 2>&1; then
+    if ! out="$(pinot_api "${sts}-0" GET /tables 2>/dev/null)" \
+         || ! printf '%s' "$out" | jq -e '.tables | type == "array"' >/dev/null 2>&1; then
+      failed="$failed ${sts}-0"
+      continue
+    fi
+    if printf '%s' "$out" | jq -e --arg t "$ROLLUP_TABLE" '.tables | index($t) != null' >/dev/null; then
       echo "${sts}-0"; return 0
     fi
   done < "$WORKDIR/rollup-sts.list"
+  if [ -n "$failed" ]; then
+    warn "could not list tables on pinot controller(s):$failed"
+    return 1
+  fi
+  return 0
 }
 
-# Prints "<lagging> <total>" for consuming segments of the legacy topic
-# (partition < 10000): lagging = segments not reporting lag 0 on every replica.
+# Prints "<lagging> <total> <offsets-signature>" for consuming segments of the
+# legacy topic (partition < 10000): lagging = segments where any replica is
+# not reporting lag 0, plus servers that did not answer. Keeps the response
+# in $WORKDIR/rollup-consuming.json for rollup_legacy_all_empty.
 rollup_legacy_lag() { # <controller-pod>
-  pinot_api "$1" GET "/tables/$ROLLUP_TABLE/consumingSegmentsInfo" | jq -r '
+  pinot_api "$1" GET "/tables/$ROLLUP_TABLE/consumingSegmentsInfo" > "$WORKDIR/rollup-consuming.json" || return 1
+  jq -r '
+    ((.serversFailingToRespond // 0) + (.serversUnparsableRespond // 0)) as $bad
+    | [ (._segmentToConsumingInfoMap // {}) | to_entries[]
+        | select((.key | split("__")[1] | tonumber) < 10000) ] as $segs
+    | ([ $segs[]
+         | select((.value | length) == 0
+                  or any(.value[]; (.partitionOffsetInfo.recordsLagMap // {})
+                         | length == 0 or any(.[]; tostring != "0"))) ]
+       | length) as $lagging
+    | ($segs | map([.key, (.value | map(.partitionOffsetInfo.latestUpstreamOffsetMap) | sort)])
+       | tojson | @base64) as $sig
+    | "\($lagging + $bad) \($segs | length) \($sig)"' "$WORKDIR/rollup-consuming.json"
+}
+
+# True only when every legacy consuming segment is confirmed empty (all
+# replicas still at the segment's start offset). Unknown counts as not empty.
+rollup_legacy_all_empty() { # <controller-pod>
+  pinot_api "$1" GET "/segments/$ROLLUP_TABLE/zkmetadata?type=REALTIME" > "$WORKDIR/rollup-zk.json" 2>/dev/null || return 1
+  jq -e --slurpfile zk "$WORKDIR/rollup-zk.json" '
     [ (._segmentToConsumingInfoMap // {}) | to_entries[]
       | select((.key | split("__")[1] | tonumber) < 10000)
-      | [ .value[]?.partitionOffsetInfo.recordsLagMap // {} | .[] ] ] as $segs
-    | "\([ $segs[] | select(length == 0 or any(.[]; tostring != "0")) ] | length) \($segs | length)"'
+      | $zk[0][.key]["segment.realtime.startOffset"] as $start
+      | ($start != null) and all(.value[];
+          (.partitionOffsetInfo.currentOffsetsMap // {})
+          | length > 0 and all(.[]; tostring == $start)) ] | all' \
+    "$WORKDIR/rollup-consuming.json" >/dev/null 2>&1
+}
+
+# Resumes the table if this run paused it; no-op otherwise.
+rollup_resume() {
+  local pod="$ROLLUP_RESUME_POD" tries=0
+  [ -n "$pod" ] || return 0
+  while [ "$tries" -lt 3 ]; do
+    if pinot_api "$pod" POST "/tables/$ROLLUP_TABLE/resumeConsumption?consumeFrom=lastConsumed" >/dev/null 2>&1; then
+      ROLLUP_RESUME_POD=""
+      info "consumption resumed (consumeFrom=lastConsumed)"
+      return 0
+    fi
+    tries=$((tries + 1))
+    sleep 5
+  done
+  warn "$ROLLUP_TABLE is still PAUSED and not ingesting. Resume it now: kubectl -n $NAMESPACE exec $pod -- curl -X POST 'http://localhost:9000/tables/$ROLLUP_TABLE/resumeConsumption?consumeFrom=lastConsumed'"
+  return 1
 }
 
 flush_rollup() {
-  local ctrl deadline out lagging total paused n
-  ctrl="$(rollup_controller)"
+  local ctrl deadline status paused owner out lagging total sig prev_sig="" n
+  ctrl="$(rollup_controller)" || return 1
   [ -n "$ctrl" ] || { info "table $ROLLUP_TABLE not found on any pinot controller -- nothing to flush"; return 0; }
   log "Flushing legacy $ROLLUP_TABLE consuming segments (controller: $ctrl)"
 
-  paused="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null | jq -r '.pauseFlag // false' || true)"
+  status="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null)" \
+    || { warn "cannot read pauseStatus of $ROLLUP_TABLE"; return 1; }
+  paused="$(printf '%s' "$status" | jq -r '.pauseFlag // false')"
   if [ "$paused" = "true" ]; then
-    # An earlier run paused but did not resume: the lag wait already
-    # passed then, continue at the seal wait.
-    info "$ROLLUP_TABLE is already paused -- resuming the flush at the seal wait"
+    # Only pick up a pause of our own (a run killed before its trap could
+    # resume). Anything else -- pinot's resource-limit auto-pause, a pause an
+    # operator set on purpose -- is not ours to lift.
+    owner="$(printf '%s' "$status" | jq -r '"\(.reasonCode) \(.comment)"')"
+    if [ "$owner" != "ADMINISTRATIVE $ROLLUP_PAUSE_COMMENT" ]; then
+      warn "$ROLLUP_TABLE is paused by something else ($owner) -- leaving it as is; resolve that pause, then re-run: $0 flush-rollup -n $NAMESPACE"
+      return 1
+    fi
+    info "$ROLLUP_TABLE is already paused by an earlier flush -- continuing at the seal wait"
+    ROLLUP_RESUME_POD="$ctrl"
   else
-    # 1. Wait for the legacy-topic segments to read everything (lag 0).
+    # 1. Wait for the legacy-topic segments to read everything (lag 0), with
+    # offsets unchanged across two polls: an old producer still rolling out
+    # could otherwise write to the legacy topic after the pause.
     deadline=$(( $(date +%s) + JOB_TIMEOUT ))
     while :; do
       out="$(rollup_legacy_lag "$ctrl" 2>/dev/null || true)"
-      read -r lagging total <<EOF
+      lagging="" total="" sig=""
+      read -r lagging total sig <<EOF
 $out
 EOF
-      if [ "${lagging:-}" = "0" ]; then
-        info "all ${total} legacy-topic consuming segment(s) at lag 0"
-        break
+      if [ "$lagging" = "0" ]; then
+        [ "$total" != "0" ] || { info "no legacy-topic consuming segments -- nothing to flush"; return 0; }
+        [ "$sig" = "$prev_sig" ] && break
+        info "$total legacy-topic consuming segment(s) at lag 0 -- confirming no new writes..."
+      elif [ -n "$lagging" ]; then
+        info "$lagging of $total legacy-topic consuming segment(s)/server(s) not at lag 0..."
+      else
+        info "could not read consumingSegmentsInfo, retrying..."
       fi
-      [ -n "${lagging:-}" ] && info "$lagging of $total legacy-topic consuming segment(s) still lagging..." \
-                            || info "could not read consumingSegmentsInfo, retrying..."
-      [ "$(date +%s)" -ge "$deadline" ] && die "legacy $ROLLUP_TABLE segments did not reach lag 0 within ${JOB_TIMEOUT}s (raise --job-timeout). Nothing was paused; re-run: $0 flush-rollup -n $NAMESPACE"
+      prev_sig="$sig"
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        warn "legacy $ROLLUP_TABLE segments did not settle at lag 0 within ${JOB_TIMEOUT}s (raise --job-timeout). Nothing was paused."
+        return 1
+      fi
       sleep 15
     done
+    info "all $total legacy-topic consuming segment(s) at lag 0"
 
-    # 2. Pause consumption (seals every consuming segment).
-    pinot_api "$ctrl" POST "/tables/$ROLLUP_TABLE/pauseConsumption?comment=flush-legacy-rollup-topic" >/dev/null \
-      || die "pauseConsumption on $ROLLUP_TABLE failed; re-run: $0 flush-rollup -n $NAMESPACE"
+    if rollup_legacy_all_empty "$ctrl"; then
+      info "legacy-topic consuming segments are all empty -- nothing to flush, skipping the pause"
+      return 0
+    fi
+
+    # 2. Pause consumption (seals every consuming segment). Armed before the
+    # call: the pause can land even if the response is lost.
+    ROLLUP_RESUME_POD="$ctrl"
+    if ! pinot_api "$ctrl" POST "/tables/$ROLLUP_TABLE/pauseConsumption?comment=$ROLLUP_PAUSE_COMMENT" >/dev/null; then
+      warn "pauseConsumption on $ROLLUP_TABLE failed"
+      rollup_resume || true
+      return 1
+    fi
     info "consumption paused"
   fi
 
@@ -1057,14 +1158,16 @@ EOF
     n="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null | jq -r '.consumingSegments | length' || true)"
     [ "$n" = "0" ] && { info "all consuming segments sealed"; break; }
     info "${n:-?} consuming segment(s) still sealing..."
-    [ "$(date +%s)" -ge "$deadline" ] && die "$ROLLUP_TABLE: consuming segments not sealed within ${JOB_TIMEOUT}s -- the table is still PAUSED (not ingesting). Re-run '$0 flush-rollup -n $NAMESPACE' to finish, or resume manually: kubectl -n $NAMESPACE exec $ctrl -- curl -X POST 'http://localhost:9000/tables/$ROLLUP_TABLE/resumeConsumption?consumeFrom=lastConsumed'"
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      warn "$ROLLUP_TABLE: consuming segments not sealed within ${JOB_TIMEOUT}s (raise --job-timeout) -- resuming ingestion"
+      rollup_resume || true
+      return 1
+    fi
     sleep 10
   done
 
   # 4. Resume from where each segment stopped.
-  pinot_api "$ctrl" POST "/tables/$ROLLUP_TABLE/resumeConsumption?consumeFrom=lastConsumed" >/dev/null \
-    || die "resumeConsumption on $ROLLUP_TABLE failed -- the table is still PAUSED; re-run: $0 flush-rollup -n $NAMESPACE"
-  info "consumption resumed (consumeFrom=lastConsumed)"
+  rollup_resume
 }
 
 # Runs flush_rollup when upgrading across ROLLUP_FLUSH_VERSION, after asking
@@ -1083,13 +1186,14 @@ maybe_flush_rollup() { # <from-version> <to-version>
     return 0
   fi
   if [ "$ASSUME_YES" = false ] && [ -t 0 ]; then
-    printf '\nWait for legacy-topic lag 0, then pause and resume %s consumption? [Y/n] ' "$ROLLUP_TABLE"
+    printf '\nWait for legacy-topic lag 0, then pause and resume %s consumption? [y/N] ' "$ROLLUP_TABLE"
     read -r reply
     case "$reply" in
-      n|N|no) warn "skipped; run it later with: $0 flush-rollup -n $NAMESPACE"; return 0 ;;
+      y|Y|yes) : ;;
+      *) warn "skipped; run it later with: $0 flush-rollup -n $NAMESPACE"; return 0 ;;
     esac
   fi
-  flush_rollup
+  flush_rollup || ROLLUP_FLUSH_FAILED=true
 }
 
 # ---------------------------------------------------------------------------
@@ -1318,8 +1422,19 @@ cmd_upgrade() {
   revert_strategies
 
   # helm rewrote kfuse-version to the new chart version (also covers 'local').
-  maybe_flush_rollup "$from_version" "$(installed_version)"
+  local to_version
+  if to_version="$(installed_version)" && { [ -n "$to_version" ] || [ -z "$from_version" ]; }; then
+    maybe_flush_rollup "$from_version" "$to_version"
+  else
+    warn "cannot read the upgraded version -- unable to tell whether the $ROLLUP_TABLE flush is needed"
+    ROLLUP_FLUSH_FAILED=true
+  fi
   log "Upgrade complete."
+  if [ "$ROLLUP_FLUSH_FAILED" = true ]; then
+    warn "the upgrade itself succeeded (no rollback needed), but the $ROLLUP_TABLE flush did not finish."
+    warn "See the messages above, then run: $0 flush-rollup -n $NAMESPACE"
+    exit 3
+  fi
 }
 
 cmd_status() {
@@ -1498,7 +1613,7 @@ cmd_rollback() {
 cmd_flush_rollup() {
   need kubectl; need jq
   acquire_lock
-  flush_rollup
+  flush_rollup || die "$ROLLUP_TABLE flush did not finish -- see the messages above"
   log "$ROLLUP_TABLE flush complete."
 }
 
