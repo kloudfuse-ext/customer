@@ -24,6 +24,13 @@
 #   kfuse-upgrade.sh restart  <sts-name-or-class-glob> [options]
 #   kfuse-upgrade.sh rollback [helm-revision] [options]
 #   kfuse-upgrade.sh run-job  <job-name> [options]
+#   kfuse-upgrade.sh flush-rollup [options]
+#
+# Post-upgrade step: upgrading from < 4.3.1 to >= 4.3.1 flushes the legacy
+# kf_metrics_rollup_topic out of the kf_metrics_rollup table (wait for lag 0
+# on the legacy segments, pause consumption until all segments seal, resume
+# from lastConsumed). Interactive runs are asked first; 'flush-rollup' runs
+# it on its own (e.g. after skipping it, or to finish an interrupted run).
 #
 # Options:
 #   -n <namespace>        Kubernetes namespace (default: kfuse)
@@ -51,7 +58,9 @@
 #   --skip-deps           Skip 'helm dep update' for local installs
 #   --job-timeout <sec>   Timeout waiting for each job (default: 1800)
 #   --pod-timeout <sec>   Timeout waiting for each pod (default: 900)
-#   --yes                 Don't prompt before the restart phase
+#   --yes                 Don't prompt before the restart phase or the
+#                         post-upgrade kf_metrics_rollup flush (runs it)
+#   --skip-rollup-flush   Skip the post-upgrade kf_metrics_rollup flush
 #   --dry-run             (upgrade) render with --dry-run=server and diff
 #                         against the live release manifest; no changes made
 #
@@ -103,6 +112,7 @@ SKIP_LOGIN=false
 SKIP_DEPS=false
 ASSUME_YES=false
 DRY_RUN=false
+SKIP_ROLLUP_FLUSH=false
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/kfuse-upgrade.XXXXXX")"
 LOCK_HELD=false
@@ -183,6 +193,7 @@ while [ $# -gt 0 ]; do
     --pod-timeout) POD_TIMEOUT="$2"; shift 2 ;;
     --yes|-y) ASSUME_YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --skip-rollup-flush) SKIP_ROLLUP_FLUSH=true; shift ;;
     -h|--help) usage 0 ;;
     -*) die "unknown option: $1" ;;
     *) POSITIONAL="$POSITIONAL $1"; shift ;;
@@ -962,6 +973,126 @@ snapshot_schemas() { # <outfile>
 }
 
 # ---------------------------------------------------------------------------
+# Post-upgrade: flush the legacy kf_metrics_rollup topic (from <4.3.1 to >=4.3.1)
+# ---------------------------------------------------------------------------
+# 4.3.1 moves kf_metrics_rollup from kf_metrics_rollup_topic onto new topics.
+# The table keeps consuming the legacy topic (partition ids < 10000; new
+# topics are numbered 10000+), but since nothing writes to it anymore its
+# consuming segments would never fill up and seal. Once the legacy segments
+# have caught up (lag 0), pause consumption -- which seals every consuming
+# segment -- then resume from where each segment stopped. Pausing while
+# records are still unread would leave them in new consuming segments that
+# never seal, hence the lag wait first.
+
+ROLLUP_TABLE="kf_metrics_rollup"
+ROLLUP_FLUSH_VERSION="4.3.1"
+
+pinot_api() { # <controller-pod> <GET|POST> <path>
+  kubectl -n "$NAMESPACE" exec "$1" -- curl -sf --max-time 30 -X "$2" "http://localhost:9000$3"
+}
+
+# Prints the controller pod (ordinal 0) of the pinot alias that hosts
+# ROLLUP_TABLE (pinot or pinot-metrics, depending on the deployment), or
+# nothing if no controller has it.
+rollup_controller() {
+  local sts class replicas
+  discover_sts > "$WORKDIR/rollup-sts.list"
+  while read -r sts class replicas; do
+    [ "$class" = "pinot-controller" ] || continue
+    if pinot_api "${sts}-0" GET /tables 2>/dev/null \
+         | jq -e --arg t "$ROLLUP_TABLE" '.tables | index($t)' >/dev/null 2>&1; then
+      echo "${sts}-0"; return 0
+    fi
+  done < "$WORKDIR/rollup-sts.list"
+}
+
+# Prints "<lagging> <total>" for consuming segments of the legacy topic
+# (partition < 10000): lagging = segments not reporting lag 0 on every replica.
+rollup_legacy_lag() { # <controller-pod>
+  pinot_api "$1" GET "/tables/$ROLLUP_TABLE/consumingSegmentsInfo" | jq -r '
+    [ (._segmentToConsumingInfoMap // {}) | to_entries[]
+      | select((.key | split("__")[1] | tonumber) < 10000)
+      | [ .value[]?.partitionOffsetInfo.recordsLagMap // {} | .[] ] ] as $segs
+    | "\([ $segs[] | select(length == 0 or any(.[]; tostring != "0")) ] | length) \($segs | length)"'
+}
+
+flush_rollup() {
+  local ctrl deadline out lagging total paused n
+  ctrl="$(rollup_controller)"
+  [ -n "$ctrl" ] || { info "table $ROLLUP_TABLE not found on any pinot controller -- nothing to flush"; return 0; }
+  log "Flushing legacy $ROLLUP_TABLE consuming segments (controller: $ctrl)"
+
+  paused="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null | jq -r '.pauseFlag // false' || true)"
+  if [ "$paused" = "true" ]; then
+    # An earlier run paused but did not resume: the lag wait already
+    # passed then, continue at the seal wait.
+    info "$ROLLUP_TABLE is already paused -- resuming the flush at the seal wait"
+  else
+    # 1. Wait for the legacy-topic segments to read everything (lag 0).
+    deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+    while :; do
+      out="$(rollup_legacy_lag "$ctrl" 2>/dev/null || true)"
+      read -r lagging total <<EOF
+$out
+EOF
+      if [ "${lagging:-}" = "0" ]; then
+        info "all ${total} legacy-topic consuming segment(s) at lag 0"
+        break
+      fi
+      [ -n "${lagging:-}" ] && info "$lagging of $total legacy-topic consuming segment(s) still lagging..." \
+                            || info "could not read consumingSegmentsInfo, retrying..."
+      [ "$(date +%s)" -ge "$deadline" ] && die "legacy $ROLLUP_TABLE segments did not reach lag 0 within ${JOB_TIMEOUT}s (raise --job-timeout). Nothing was paused; re-run: $0 flush-rollup -n $NAMESPACE"
+      sleep 15
+    done
+
+    # 2. Pause consumption (seals every consuming segment).
+    pinot_api "$ctrl" POST "/tables/$ROLLUP_TABLE/pauseConsumption?comment=flush-legacy-rollup-topic" >/dev/null \
+      || die "pauseConsumption on $ROLLUP_TABLE failed; re-run: $0 flush-rollup -n $NAMESPACE"
+    info "consumption paused"
+  fi
+
+  # 3. Wait until every consuming segment has sealed.
+  deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+  while :; do
+    n="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null | jq -r '.consumingSegments | length' || true)"
+    [ "$n" = "0" ] && { info "all consuming segments sealed"; break; }
+    info "${n:-?} consuming segment(s) still sealing..."
+    [ "$(date +%s)" -ge "$deadline" ] && die "$ROLLUP_TABLE: consuming segments not sealed within ${JOB_TIMEOUT}s -- the table is still PAUSED (not ingesting). Re-run '$0 flush-rollup -n $NAMESPACE' to finish, or resume manually: kubectl -n $NAMESPACE exec $ctrl -- curl -X POST 'http://localhost:9000/tables/$ROLLUP_TABLE/resumeConsumption?consumeFrom=lastConsumed'"
+    sleep 10
+  done
+
+  # 4. Resume from where each segment stopped.
+  pinot_api "$ctrl" POST "/tables/$ROLLUP_TABLE/resumeConsumption?consumeFrom=lastConsumed" >/dev/null \
+    || die "resumeConsumption on $ROLLUP_TABLE failed -- the table is still PAUSED; re-run: $0 flush-rollup -n $NAMESPACE"
+  info "consumption resumed (consumeFrom=lastConsumed)"
+}
+
+# Runs flush_rollup when upgrading across ROLLUP_FLUSH_VERSION, after asking
+# (interactive runs without --yes).
+maybe_flush_rollup() { # <from-version> <to-version>
+  local from="$1" to="$2" reply
+  [ -n "$from" ] && [ -n "$to" ] || return 0
+  if ! sort -V </dev/null >/dev/null 2>&1; then
+    warn "sort -V unavailable; cannot tell whether $from -> $to needs the $ROLLUP_TABLE flush. If crossing $ROLLUP_FLUSH_VERSION, run: $0 flush-rollup -n $NAMESPACE"
+    return 0
+  fi
+  version_lt "$from" "$ROLLUP_FLUSH_VERSION" && ! version_lt "$to" "$ROLLUP_FLUSH_VERSION" || return 0
+  log "Post-upgrade: $from -> $to crosses $ROLLUP_FLUSH_VERSION -- $ROLLUP_TABLE must flush the legacy kf_metrics_rollup_topic"
+  if [ "$SKIP_ROLLUP_FLUSH" = true ]; then
+    warn "skipped (--skip-rollup-flush); run it later with: $0 flush-rollup -n $NAMESPACE"
+    return 0
+  fi
+  if [ "$ASSUME_YES" = false ] && [ -t 0 ]; then
+    printf '\nWait for legacy-topic lag 0, then pause and resume %s consumption? [Y/n] ' "$ROLLUP_TABLE"
+    read -r reply
+    case "$reply" in
+      n|N|no) warn "skipped; run it later with: $0 flush-rollup -n $NAMESPACE"; return 0 ;;
+    esac
+  fi
+  flush_rollup
+}
+
+# ---------------------------------------------------------------------------
 # Helm
 # ---------------------------------------------------------------------------
 
@@ -982,17 +1113,29 @@ registry_login() {
   fi
 }
 
+# Installed chart version from the kfuse-version ConfigMap ({{ .Chart.Version }}),
+# or empty when it does not exist (fresh install).
+installed_version() {
+  local v
+  if ! v="$(kubectl -n "$NAMESPACE" get cm kfuse-version -o jsonpath='{.data.version}' 2>"$WORKDIR/ver.err")"; then
+    # Only a confirmed NotFound (ConfigMap or namespace) means fresh
+    # install; an API/RBAC error must not bypass the version checks.
+    grep -qi 'not found' "$WORKDIR/ver.err" \
+      || die "cannot read kfuse-version ConfigMap: $(tail -1 "$WORKDIR/ver.err" 2>/dev/null)"
+    v=""
+  fi
+  echo "$v"
+}
+
+# True if <a> < <b>, comparing major.minor.patch only (prerelease ignored).
+version_lt() { # <a> <b>
+  local a="${1%%-*}" b="${2%%-*}"
+  [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" = "$a" ]
+}
+
 version_guard() { # <target-version>
   local current cur_base tgt_base
-  if ! current="$(kubectl -n "$NAMESPACE" get cm kfuse-version -o jsonpath='{.data.version}' 2>"$WORKDIR/ver.err")"; then
-    # Only a confirmed NotFound (ConfigMap or namespace) means fresh
-    # install; an API/RBAC error must not bypass the downgrade check.
-    if grep -qi 'not found' "$WORKDIR/ver.err"; then
-      current=""
-    else
-      die "cannot read kfuse-version ConfigMap: $(tail -1 "$WORKDIR/ver.err" 2>/dev/null)"
-    fi
-  fi
+  current="$(installed_version)"
   [ -z "$current" ] && { info "no kfuse-version ConfigMap (fresh install?)"; return 0; }
   info "current version: $current, target: $1"
   # Mirror the chart's guard (validation.yaml): compare major.minor.patch
@@ -1121,6 +1264,8 @@ cmd_upgrade() {
   acquire_lock
 
   log "Phase 0: preflight (namespace=$NAMESPACE release=$RELEASE target=$TARGET install=$IS_INSTALL)"
+  local from_version=""
+  [ "$IS_INSTALL" = false ] && from_version="$(installed_version)"
   delete_stale_jobs
   snapshot_schemas "$WORKDIR/schemas.pre"
   if [ "$IS_INSTALL" = false ]; then
@@ -1171,6 +1316,9 @@ cmd_upgrade() {
   log "Phase 4: verify"
   cmd_status || die "verification failed -- see stale components above"
   revert_strategies
+
+  # helm rewrote kfuse-version to the new chart version (also covers 'local').
+  maybe_flush_rollup "$from_version" "$(installed_version)"
   log "Upgrade complete."
 }
 
@@ -1347,6 +1495,13 @@ cmd_rollback() {
   revert_strategies
 }
 
+cmd_flush_rollup() {
+  need kubectl; need jq
+  acquire_lock
+  flush_rollup
+  log "$ROLLUP_TABLE flush complete."
+}
+
 cmd_run_job() {
   local job="${1:-}"
   [ -n "$job" ] || die "usage: $0 run-job <job-name> [options]"
@@ -1385,6 +1540,7 @@ case "$COMMAND" in
   restart)  cmd_restart "$@" ;;
   rollback) cmd_rollback "$@" ;;
   run-job)  cmd_run_job "$@" ;;
+  flush-rollup) cmd_flush_rollup "$@" ;;
   -h|--help|help) usage 0 ;;
   *) die "unknown command: $COMMAND (see --help)" ;;
 esac
