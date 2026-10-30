@@ -26,14 +26,16 @@
 #   kfuse-upgrade.sh run-job  <job-name> [options]
 #   kfuse-upgrade.sh flush-rollup [options]
 #
-# Post-upgrade step: upgrading from < 4.3.1 to >= 4.3.1 flushes the legacy
+# Post-upgrade step: upgrading from < 4.4.0 to >= 4.4.0 flushes the legacy
 # kf_metrics_rollup_topic out of the kf_metrics_rollup table (wait for lag 0
 # on the legacy segments, pause consumption until all segments seal, resume
 # from lastConsumed). Interactive runs are asked first; 'flush-rollup' runs
 # it on its own (e.g. after skipping it, or to finish an interrupted run).
-# The gate compares major.minor.patch, so clusters already on a 4.3.1 RC do
-# not get it on RC -> GA: run 'flush-rollup' by hand there. If the upgrade
-# succeeds but the flush does not, the script exits 3 (do not roll back).
+# The gate compares major.minor.patch. 4.3.1 release candidates already had
+# the new rollup topics; their base version 4.3.1 is below 4.4.0, so
+# upgrading one to 4.4.0 runs the flush again, which only pauses and resumes
+# the table. If the upgrade succeeds but the flush does not, the script
+# exits 3 (do not roll back).
 #
 # Options:
 #   -n <namespace>        Kubernetes namespace (default: kfuse)
@@ -984,9 +986,10 @@ snapshot_schemas() { # <outfile>
 }
 
 # ---------------------------------------------------------------------------
-# Post-upgrade: flush the legacy kf_metrics_rollup topic (from <4.3.1 to >=4.3.1)
+# Post-upgrade: flush the legacy kf_metrics_rollup topic (from <4.4.0 to >=4.4.0)
 # ---------------------------------------------------------------------------
-# 4.3.1 moves kf_metrics_rollup from kf_metrics_rollup_topic onto new topics.
+# 4.4.0 moves kf_metrics_rollup from kf_metrics_rollup_topic onto new topics
+# (4.3.1 release candidates already carried this change).
 # The table keeps consuming the legacy topic (partition ids < 10000; new
 # topics are numbered 10000+), but nothing writes to it anymore: a legacy
 # consuming segment holding rows only seals at the time threshold, and until
@@ -1004,7 +1007,7 @@ snapshot_schemas() { # <outfile>
 # read as a failed upgrade.
 
 ROLLUP_TABLE="kf_metrics_rollup"
-ROLLUP_FLUSH_VERSION="4.3.1"
+ROLLUP_FLUSH_VERSION="4.4.0"
 ROLLUP_PAUSE_COMMENT="flush-legacy-rollup-topic"
 
 pinot_api() { # <controller-pod> <GET|POST> <path>
