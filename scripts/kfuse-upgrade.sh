@@ -25,6 +25,7 @@
 #   kfuse-upgrade.sh rollback [helm-revision] [options]
 #   kfuse-upgrade.sh run-job  <job-name> [options]
 #   kfuse-upgrade.sh flush-rollup [options]
+#   kfuse-upgrade.sh restore-rollup-retention [options]
 #
 # Post-upgrade step: upgrading from < 4.4.0 to >= 4.4.0 flushes the legacy
 # kf_metrics_rollup_topic out of the kf_metrics_rollup table (wait for lag 0
@@ -36,6 +37,14 @@
 # upgrading one to 4.4.0 runs the flush again, which only pauses and resumes
 # the table. If the upgrade succeeds but the flush does not, the script
 # exits 3 (do not roll back).
+# After a successful flush, kf_metrics_rollup_topic's retention.ms is lowered
+# to 1h so Kafka frees the legacy records (the original value is saved in a
+# local file, ./kfuse-rollup-retention-<namespace>-<release>.txt by default;
+# see --retention-file). The script does not wait:
+# about 90 minutes later, once broker disk usage has dropped, run
+# 'restore-rollup-retention' to put the original retention back. Do not leave
+# the 1h retention in place -- after a rollback below 4.4.0 the topic is
+# written again and anything not read within an hour is lost.
 #
 # Options:
 #   -n <namespace>        Kubernetes namespace (default: kfuse)
@@ -66,6 +75,13 @@
 #   --yes                 Don't prompt before the restart phase or the
 #                         post-upgrade kf_metrics_rollup flush (runs it)
 #   --skip-rollup-flush   Skip the post-upgrade kf_metrics_rollup flush
+#   --skip-rollup-retention
+#                         Flush, but do not lower kf_metrics_rollup_topic's
+#                         retention.ms afterwards
+#   --retention-file <path>
+#                         Where the original retention.ms is saved when it is
+#                         lowered, and read by restore-rollup-retention
+#                         (default: ./kfuse-rollup-retention-<ns>-<release>.txt)
 #   --dry-run             (upgrade) render with --dry-run=server and diff
 #                         against the live release manifest; no changes made
 #
@@ -118,6 +134,8 @@ SKIP_DEPS=false
 ASSUME_YES=false
 DRY_RUN=false
 SKIP_ROLLUP_FLUSH=false
+SKIP_ROLLUP_RETENTION=false
+ROLLUP_RETENTION_FILE=""
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/kfuse-upgrade.XXXXXX")"
 LOCK_HELD=false
@@ -207,6 +225,8 @@ while [ $# -gt 0 ]; do
     --yes|-y) ASSUME_YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --skip-rollup-flush) SKIP_ROLLUP_FLUSH=true; shift ;;
+    --skip-rollup-retention) SKIP_ROLLUP_RETENTION=true; shift ;;
+    --retention-file) ROLLUP_RETENTION_FILE="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) die "unknown option: $1" ;;
     *) POSITIONAL="$POSITIONAL $1"; shift ;;
@@ -1009,6 +1029,7 @@ snapshot_schemas() { # <outfile>
 ROLLUP_TABLE="kf_metrics_rollup"
 ROLLUP_FLUSH_VERSION="4.4.0"
 ROLLUP_PAUSE_COMMENT="flush-legacy-rollup-topic"
+ROLLUP_TABLE_FOUND=true   # flush_rollup clears it when no controller hosts the table
 
 pinot_api() { # <controller-pod> <GET|POST> <path>
   kubectl -n "$NAMESPACE" exec --request-timeout=60s "$1" -- curl -sf --max-time 30 -X "$2" "http://localhost:9000$3"
@@ -1093,7 +1114,7 @@ rollup_resume() {
 flush_rollup() {
   local ctrl deadline status paused owner out lagging total sig prev_sig="" n
   ctrl="$(rollup_controller)" || return 1
-  [ -n "$ctrl" ] || { info "table $ROLLUP_TABLE not found on any pinot controller -- nothing to flush"; return 0; }
+  [ -n "$ctrl" ] || { ROLLUP_TABLE_FOUND=false; info "table $ROLLUP_TABLE not found on any pinot controller -- nothing to flush"; return 0; }
   log "Flushing legacy $ROLLUP_TABLE consuming segments (controller: $ctrl)"
 
   status="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null)" \
@@ -1189,14 +1210,160 @@ maybe_flush_rollup() { # <from-version> <to-version>
     return 0
   fi
   if [ "$ASSUME_YES" = false ] && [ -t 0 ]; then
-    printf '\nWait for legacy-topic lag 0, then pause and resume %s consumption? [y/N] ' "$ROLLUP_TABLE"
+    if [ "$SKIP_ROLLUP_RETENTION" = true ]; then
+      printf '\nWait for legacy-topic lag 0, then pause and resume %s consumption? [y/N] ' "$ROLLUP_TABLE"
+    else
+      printf '\nWait for legacy-topic lag 0, pause and resume %s consumption, then lower %s retention.ms to 1h? [y/N] ' "$ROLLUP_TABLE" "$ROLLUP_LEGACY_TOPIC"
+    fi
     read -r reply
     case "$reply" in
       y|Y|yes) : ;;
       *) warn "skipped; run it later with: $0 flush-rollup -n $NAMESPACE"; return 0 ;;
     esac
   fi
-  flush_rollup || ROLLUP_FLUSH_FAILED=true
+  if flush_rollup; then
+    maybe_lower_rollup_retention || true
+  else
+    ROLLUP_FLUSH_FAILED=true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Post-flush: reclaim Kafka disk from the legacy kf_metrics_rollup_topic
+# ---------------------------------------------------------------------------
+# Nothing writes kf_metrics_rollup_topic after 4.4.0, but its records stay on
+# the brokers until they age out. Once the flush has sealed everything read
+# from it, retention.ms is lowered to 1h; 'restore-rollup-retention' puts the
+# original value back (or removes the override if there was none). The
+# original is saved in ROLLUP_RETENTION_FILE (original=<ms>, empty = no
+# override), written only if absent, so a re-run never overwrites it with
+# the temporary 1h value. Only run after a successful
+# flush: records leaving Kafka before they are on disk are lost if a
+# realtime server restarts.
+
+ROLLUP_LEGACY_TOPIC="kf_metrics_rollup_topic"
+ROLLUP_TEMP_RETENTION_MS=3600000
+# Absolute, so the printed restore command works from any directory.
+ROLLUP_RETENTION_FILE="${ROLLUP_RETENTION_FILE:-kfuse-rollup-retention-$NAMESPACE-$RELEASE.txt}"
+case "$ROLLUP_RETENTION_FILE" in /*) ;; *) ROLLUP_RETENTION_FILE="$PWD/$ROLLUP_RETENTION_FILE" ;; esac
+ROLLUP_RETENTION_LOWERED=false
+
+# Prints a kafka broker pod (ordinal 0) of this release; falls back to a
+# controller-eligible pod for combined-mode / legacy deployments.
+rollup_kafka_pod() {
+  discover_sts > "$WORKDIR/kafka-sts.list" || return 1
+  awk '$2 == "kafka-broker" { print $1 "-0"; exit }' "$WORKDIR/kafka-sts.list" | grep . \
+    || awk '$2 == "kafka-controller" { print $1 "-0"; exit }' "$WORKDIR/kafka-sts.list" | grep .
+}
+
+# Runs kafka-configs.sh in the broker pod against the client listener on
+# localhost:9092. JMX_PORT must be unset (the broker already holds it).
+# Tries PLAINTEXT first, then SASL_PLAINTEXT/PLAIN with the first bitnami
+# client user from the pod env. A TLS client listener is not supported.
+kafka_configs() { # <pod> <kafka-configs.sh args...>
+  local pod="$1"; shift
+  kubectl -n "$NAMESPACE" exec --request-timeout=300s -c kafka "$pod" -- bash -c '
+    unset JMX_PORT
+    PATH="$PATH:/opt/bitnami/kafka/bin"
+    kafka-configs.sh --bootstrap-server localhost:9092 "$@" 2>/tmp/kfuse-configs.err && exit 0
+    if [ -n "${KAFKA_CLIENT_USERS:-}" ]; then
+      cfg=/tmp/kfuse-configs.properties
+      printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"%s\" password=\"%s\";\n" \
+        "${KAFKA_CLIENT_USERS%%,*}" "${KAFKA_CLIENT_PASSWORDS%%,*}" > "$cfg"
+      kafka-configs.sh --bootstrap-server localhost:9092 --command-config "$cfg" "$@" 2>/tmp/kfuse-configs.err
+      rc=$?; rm -f "$cfg"; [ "$rc" -eq 0 ] && exit 0
+    fi
+    tail -3 /tmp/kfuse-configs.err >&2; exit 1' kafka-configs "$@"
+}
+
+# Prints the topic's retention.ms override ("" if none). Fails if the topic
+# cannot be described; prints KFUSE_TOPIC_MISSING if it does not exist.
+rollup_topic_retention() { # <pod>
+  local out
+  if ! out="$(kafka_configs "$1" --entity-type topics --entity-name "$ROLLUP_LEGACY_TOPIC" --describe 2>"$WORKDIR/kafka-configs.err")"; then
+    grep -qi 'UnknownTopicOrPartition\|does not exist' "$WORKDIR/kafka-configs.err" && { echo KFUSE_TOPIC_MISSING; return 0; }
+    return 1
+  fi
+  printf '%s\n' "$out" | sed -n 's/^[[:space:]]*retention\.ms=\([0-9-]*\).*/\1/p' | head -1
+}
+
+rollup_restore_hint() {
+  echo "$0 restore-rollup-retention -n $NAMESPACE -r $RELEASE --retention-file $ROLLUP_RETENTION_FILE"
+}
+
+# Prints the saved original ("" = no override); fails if nothing is saved.
+rollup_saved_retention() {
+  [ -f "$ROLLUP_RETENTION_FILE" ] || return 1
+  sed -n 's/^original=//p' "$ROLLUP_RETENTION_FILE" | head -1
+}
+
+lower_rollup_retention() {
+  local pod cur saved
+  log "Lowering $ROLLUP_LEGACY_TOPIC retention.ms to $ROLLUP_TEMP_RETENTION_MS to reclaim Kafka disk"
+  pod="$(rollup_kafka_pod)" || { warn "no kafka broker pod found for release $RELEASE"; return 1; }
+  cur="$(rollup_topic_retention "$pod")" \
+    || { warn "cannot describe $ROLLUP_LEGACY_TOPIC on $pod: $(tail -1 "$WORKDIR/kafka-configs.err" 2>/dev/null)"; return 1; }
+  [ "$cur" != KFUSE_TOPIC_MISSING ] || { info "topic $ROLLUP_LEGACY_TOPIC does not exist -- nothing to do"; return 0; }
+
+  if saved="$(rollup_saved_retention)"; then
+    info "original retention.ms already saved in $ROLLUP_RETENTION_FILE (${saved:-no override})"
+  else
+    [ "$cur" = "$ROLLUP_TEMP_RETENTION_MS" ] \
+      && warn "$ROLLUP_LEGACY_TOPIC already has retention.ms=$cur with no saved original -- restoring will remove the override"
+    [ "$cur" = "$ROLLUP_TEMP_RETENTION_MS" ] && cur=""
+    printf 'original=%s\nlowered=%s\ntopic=%s\nnamespace=%s\nrelease=%s\n' \
+        "$cur" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ROLLUP_LEGACY_TOPIC" "$NAMESPACE" "$RELEASE" \
+        > "$ROLLUP_RETENTION_FILE" 2>"$WORKDIR/retention-file.err" \
+      || { warn "cannot save the original retention.ms to $ROLLUP_RETENTION_FILE -- not lowering it: $(tail -1 "$WORKDIR/retention-file.err" 2>/dev/null)"; return 1; }
+    info "saved original retention.ms (${cur:-no override}) to $ROLLUP_RETENTION_FILE"
+  fi
+
+  kafka_configs "$pod" --entity-type topics --entity-name "$ROLLUP_LEGACY_TOPIC" \
+      --alter --add-config "retention.ms=$ROLLUP_TEMP_RETENTION_MS" >/dev/null 2>"$WORKDIR/kafka-configs.err" \
+    || { warn "cannot set retention.ms on $ROLLUP_LEGACY_TOPIC: $(tail -1 "$WORKDIR/kafka-configs.err" 2>/dev/null)"; return 1; }
+  info "$ROLLUP_LEGACY_TOPIC retention.ms=$ROLLUP_TEMP_RETENTION_MS"
+  ROLLUP_RETENTION_LOWERED=true
+  warn "TEMPORARY: wait ~90 minutes, confirm Kafka broker disk usage dropped, then restore the original retention: $(rollup_restore_hint)"
+}
+
+maybe_lower_rollup_retention() {
+  [ "$ROLLUP_TABLE_FOUND" = true ] || return 0
+  if [ "$SKIP_ROLLUP_RETENTION" = true ]; then
+    info "not lowering $ROLLUP_LEGACY_TOPIC retention (--skip-rollup-retention)"
+    return 0
+  fi
+  lower_rollup_retention && return 0
+  warn "$ROLLUP_LEGACY_TOPIC retention was not lowered (the flush itself succeeded). To reclaim the disk, follow the 4.4.0 post-upgrade docs, or re-run: $0 flush-rollup -n $NAMESPACE -r $RELEASE"
+  return 1
+}
+
+cmd_restore_rollup_retention() {
+  need kubectl; need jq
+  acquire_lock
+  local pod cur orig
+  pod="$(rollup_kafka_pod)" || die "no kafka broker pod found for release $RELEASE"
+  cur="$(rollup_topic_retention "$pod")" \
+    || die "cannot describe $ROLLUP_LEGACY_TOPIC on $pod: $(tail -1 "$WORKDIR/kafka-configs.err" 2>/dev/null)"
+  [ "$cur" != KFUSE_TOPIC_MISSING ] || die "topic $ROLLUP_LEGACY_TOPIC does not exist"
+  if orig="$(rollup_saved_retention)"; then
+    :
+  elif [ "$cur" = "$ROLLUP_TEMP_RETENTION_MS" ]; then
+    warn "no saved original at $ROLLUP_RETENTION_FILE -- removing the retention.ms override"
+    orig=""
+  else
+    info "$ROLLUP_LEGACY_TOPIC retention.ms is ${cur:-not overridden} and nothing was saved -- nothing to restore"
+    return 0
+  fi
+  log "Restoring $ROLLUP_LEGACY_TOPIC retention.ms (${orig:-remove override}) on $pod"
+  if [ -n "$orig" ]; then
+    kafka_configs "$pod" --entity-type topics --entity-name "$ROLLUP_LEGACY_TOPIC" \
+      --alter --add-config "retention.ms=$orig" >/dev/null 2>"$WORKDIR/kafka-configs.err"
+  elif [ -n "$cur" ]; then
+    kafka_configs "$pod" --entity-type topics --entity-name "$ROLLUP_LEGACY_TOPIC" \
+      --alter --delete-config retention.ms >/dev/null 2>"$WORKDIR/kafka-configs.err"
+  fi || die "cannot alter $ROLLUP_LEGACY_TOPIC: $(tail -1 "$WORKDIR/kafka-configs.err" 2>/dev/null)"
+  rm -f "$ROLLUP_RETENTION_FILE"
+  log "$ROLLUP_LEGACY_TOPIC retention restored."
 }
 
 # ---------------------------------------------------------------------------
@@ -1433,6 +1600,8 @@ cmd_upgrade() {
     ROLLUP_FLUSH_FAILED=true
   fi
   log "Upgrade complete."
+  [ "$ROLLUP_RETENTION_LOWERED" = false ] \
+    || warn "$ROLLUP_LEGACY_TOPIC retention.ms is temporarily 1h. In ~90 minutes, once Kafka disk usage has dropped, run: $(rollup_restore_hint)"
   if [ "$ROLLUP_FLUSH_FAILED" = true ]; then
     warn "the upgrade itself succeeded (no rollback needed), but the $ROLLUP_TABLE flush did not finish."
     warn "See the messages above, then run: $0 flush-rollup -n $NAMESPACE"
@@ -1618,6 +1787,7 @@ cmd_flush_rollup() {
   acquire_lock
   flush_rollup || die "$ROLLUP_TABLE flush did not finish -- see the messages above"
   log "$ROLLUP_TABLE flush complete."
+  maybe_lower_rollup_retention || true
 }
 
 cmd_run_job() {
@@ -1659,6 +1829,7 @@ case "$COMMAND" in
   rollback) cmd_rollback "$@" ;;
   run-job)  cmd_run_job "$@" ;;
   flush-rollup) cmd_flush_rollup "$@" ;;
+  restore-rollup-retention) cmd_restore_rollup_retention "$@" ;;
   -h|--help|help) usage 0 ;;
   *) die "unknown command: $COMMAND (see --help)" ;;
 esac
