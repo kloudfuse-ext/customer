@@ -32,8 +32,10 @@
 # until all segments seal, resume from lastConsumed), then runs helm upgrade,
 # which scales metrics-transformer back up. If anything fails before helm
 # upgrade succeeds, metrics-transformer is scaled back up and the upgrade
-# stops. Interactive runs are asked first; declining stops the upgrade (use
-# --skip-rollup-flush to upgrade without it). 'flush-rollup' runs only the
+# stops. The original replica count is kept in the StatefulSet annotation
+# kfuse-upgrade/transformer-replicas, so a re-run after a crash still
+# restores it. These steps run without asking (--yes is not needed);
+# --skip-rollup-flush upgrades without them. 'flush-rollup' runs only the
 # flush (e.g. to finish an interrupted one); it does not scale anything.
 # The gate compares major.minor.patch, so a 4.3.1 release candidate counts
 # as below 4.4.0.
@@ -64,9 +66,7 @@
 #   --skip-deps           Skip 'helm dep update' for local installs
 #   --job-timeout <sec>   Timeout waiting for each job (default: 1800)
 #   --pod-timeout <sec>   Timeout waiting for each pod (default: 900)
-#   --yes                 Don't prompt before the restart phase or the
-#                         pre-upgrade metrics-transformer scale-down and
-#                         kf_metrics_rollup flush (runs them)
+#   --yes                 Don't prompt before the restart phase
 #   --skip-rollup-flush   Skip the pre-upgrade metrics-transformer scale-down
 #                         and kf_metrics_rollup flush
 #   --dry-run             (upgrade) render with --dry-run=server and diff
@@ -1005,12 +1005,17 @@ snapshot_schemas() { # <outfile>
 # ROLLUP_RESUME_POD is set before pausing and the EXIT trap resumes while it
 # is set. Likewise TRANSFORMER_RESTORE_REPLICAS is set before scaling down and
 # the trap scales metrics-transformer back up until helm upgrade succeeds.
-# Resuming with a commit in flight is safe.
+# The count is also written to the StatefulSet annotation
+# TRANSFORMER_REPLICAS_ANNOTATION before scaling down, so a run killed without
+# its trap (kill -9, lost runner) is recovered by the next one: the
+# pre-upgrade step re-arms from it, and every upgrade reconciles it after
+# helm. Resuming with a commit in flight is safe.
 
 ROLLUP_TABLE="kf_metrics_rollup"
 ROLLUP_FLUSH_VERSION="4.4.0"
 ROLLUP_PAUSE_COMMENT="flush-legacy-rollup-topic"
 TRANSFORMER_STS="metrics-transformer"
+TRANSFORMER_REPLICAS_ANNOTATION="kfuse-upgrade/transformer-replicas"
 
 pinot_api() { # <controller-pod> <GET|POST> <path>
   kubectl -n "$NAMESPACE" exec --request-timeout=60s "$1" -- curl -sf --max-time 30 -X "$2" "http://localhost:9000$3"
@@ -1173,42 +1178,66 @@ EOF
   rollup_resume
 }
 
-# Scales metrics-transformer back to the replica count this run scaled it
-# down from; no-op otherwise.
+transformer_kubectl() { kubectl -n "$NAMESPACE" "$@" statefulset "$TRANSFORMER_STS"; }
+
+# Prints the replica count saved by a scale-down ("" if none).
+transformer_saved_replicas() {
+  transformer_kubectl get -o "jsonpath={.metadata.annotations.kfuse-upgrade/transformer-replicas}" 2>/dev/null || true
+}
+
+transformer_clear_annotation() {
+  transformer_kubectl annotate "${TRANSFORMER_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 \
+    || warn "cannot remove annotation $TRANSFORMER_REPLICAS_ANNOTATION from $TRANSFORMER_STS -- remove it by hand: kubectl -n $NAMESPACE annotate statefulset $TRANSFORMER_STS ${TRANSFORMER_REPLICAS_ANNOTATION}-"
+}
+
+# Scales metrics-transformer back to the replica count it was scaled down
+# from (TRANSFORMER_RESTORE_REPLICAS), then clears the annotation; no-op if
+# nothing is armed.
 transformer_restore() {
   local n="$TRANSFORMER_RESTORE_REPLICAS"
   [ -n "$n" ] || return 0
-  if kubectl -n "$NAMESPACE" scale statefulset "$TRANSFORMER_STS" --replicas="$n" >/dev/null 2>&1; then
+  if transformer_kubectl scale --replicas="$n" >/dev/null 2>&1; then
     TRANSFORMER_RESTORE_REPLICAS=""
     info "$TRANSFORMER_STS scaled back to $n replica(s)"
+    transformer_clear_annotation
     return 0
   fi
   warn "$TRANSFORMER_STS is still scaled to 0 and metrics are not being transformed. Scale it back now: kubectl -n $NAMESPACE scale statefulset $TRANSFORMER_STS --replicas=$n"
   return 1
 }
 
-# Scales metrics-transformer to 0 and waits for its pods to stop. A missing
-# StatefulSet is not an error (nothing writes the rollup topic).
+# Scales metrics-transformer to 0 and waits for its pods to stop. The
+# original count is annotated on the StatefulSet first; if it is already at 0
+# with a saved count (a crashed earlier run), restore is re-armed from it. A
+# missing StatefulSet is not an error (nothing writes the rollup topic).
 transformer_scale_down() {
-  local n deadline
-  if ! n="$(kubectl -n "$NAMESPACE" get statefulset "$TRANSFORMER_STS" -o jsonpath='{.spec.replicas}' 2>"$WORKDIR/transformer.err")"; then
+  local n saved deadline
+  if ! n="$(transformer_kubectl get -o jsonpath='{.spec.replicas}' 2>"$WORKDIR/transformer.err")"; then
     grep -qi 'not found' "$WORKDIR/transformer.err" \
       && { info "no $TRANSFORMER_STS StatefulSet -- nothing to scale down"; return 0; }
     warn "cannot read $TRANSFORMER_STS: $(tail -1 "$WORKDIR/transformer.err" 2>/dev/null)"
     return 1
   fi
   if [ "${n:-0}" = "0" ]; then
-    info "$TRANSFORMER_STS is already at 0 replicas"
+    saved="$(transformer_saved_replicas)"
+    if [ -n "$saved" ] && [ "$saved" != "0" ]; then
+      TRANSFORMER_RESTORE_REPLICAS="$saved"
+      info "$TRANSFORMER_STS is at 0 replicas from an earlier run (original: $saved) -- will restore it"
+    else
+      info "$TRANSFORMER_STS is already at 0 replicas"
+    fi
   else
+    transformer_kubectl annotate --overwrite "$TRANSFORMER_REPLICAS_ANNOTATION=$n" >/dev/null \
+      || { warn "cannot record $TRANSFORMER_STS replica count -- not scaling it down"; return 1; }
     # Armed before the call: the scale can land even if the response is lost.
     TRANSFORMER_RESTORE_REPLICAS="$n"
-    kubectl -n "$NAMESPACE" scale statefulset "$TRANSFORMER_STS" --replicas=0 >/dev/null \
+    transformer_kubectl scale --replicas=0 >/dev/null \
       || { warn "cannot scale $TRANSFORMER_STS to 0"; return 1; }
     info "scaled $TRANSFORMER_STS from $n to 0 replicas"
   fi
   deadline=$(( $(date +%s) + POD_TIMEOUT ))
   while :; do
-    n="$(kubectl -n "$NAMESPACE" get statefulset "$TRANSFORMER_STS" -o jsonpath='{.status.replicas}' 2>/dev/null || echo "?")"
+    n="$(transformer_kubectl get -o jsonpath='{.status.replicas}' 2>/dev/null || echo "?")"
     [ "${n:-0}" = "0" ] && { info "$TRANSFORMER_STS pods stopped"; return 0; }
     if [ "$(date +%s)" -ge "$deadline" ]; then
       warn "$TRANSFORMER_STS still has $n pod(s) after ${POD_TIMEOUT}s (raise --pod-timeout)"
@@ -1229,12 +1258,12 @@ target_version() {
 }
 
 # Before helm upgrade, when upgrading across ROLLUP_FLUSH_VERSION: scale
-# metrics-transformer to 0 and flush kf_metrics_rollup, after asking
-# (interactive runs without --yes). Dies on decline or failure, with
+# metrics-transformer to 0 and flush kf_metrics_rollup. Required when
+# crossing 4.4.0, so it runs without asking. Dies on failure, with
 # metrics-transformer scaled back up by the EXIT trap; nothing has been
 # upgraded yet.
 pre_upgrade_rollup_flush() { # <from-version> <to-version>
-  local from="$1" to="$2" reply
+  local from="$1" to="$2"
   [ -n "$from" ] || return 0
   [ -n "$to" ] || die "cannot tell the target chart version -- unable to decide whether the pre-upgrade $ROLLUP_TABLE flush is needed (use --skip-rollup-flush to proceed without it)"
   sort -V </dev/null >/dev/null 2>&1 \
@@ -1245,30 +1274,27 @@ pre_upgrade_rollup_flush() { # <from-version> <to-version>
     warn "skipped (--skip-rollup-flush)"
     return 0
   fi
-  if [ "$ASSUME_YES" = false ] && [ -t 0 ]; then
-    printf '\nScale %s to 0, then wait for %s lag 0 and pause/resume consumption before upgrading? [y/N] ' "$TRANSFORMER_STS" "$ROLLUP_TABLE"
-    read -r reply
-    case "$reply" in
-      y|Y|yes) : ;;
-      *) die "upgrade not started. Re-run and confirm, or pass --skip-rollup-flush to upgrade without it" ;;
-    esac
-  fi
   transformer_scale_down || die "$TRANSFORMER_STS scale-down failed -- upgrade not started"
   flush_rollup || die "$ROLLUP_TABLE flush did not finish -- upgrade not started"
   info "metrics are queued in Kafka until $TRANSFORMER_STS is back -- proceeding with the upgrade"
 }
 
-# After helm upgrade: helm normally restores metrics-transformer's replicas;
-# scale it back ourselves if it did not.
+# After helm upgrade, on every upgrade: helm normally restores
+# metrics-transformer's replicas. If it is still at 0 and a count was saved
+# (by this run, or by an earlier run that died without its trap), scale it
+# back; then clear the annotation.
 post_helm_transformer_check() {
-  local n
-  [ -n "$TRANSFORMER_RESTORE_REPLICAS" ] || return 0
-  n="$(kubectl -n "$NAMESPACE" get statefulset "$TRANSFORMER_STS" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+  local n saved
+  n="$(transformer_kubectl get -o jsonpath='{.spec.replicas}' 2>/dev/null)" || return 0
+  saved="${TRANSFORMER_RESTORE_REPLICAS:-$(transformer_saved_replicas)}"
+  [ -n "$saved" ] || return 0
   if [ -n "$n" ] && [ "$n" != "0" ]; then
     info "helm scaled $TRANSFORMER_STS back to $n replica(s)"
     TRANSFORMER_RESTORE_REPLICAS=""
+    transformer_clear_annotation
   else
-    warn "$TRANSFORMER_STS is still at ${n:-?} replicas after helm upgrade -- scaling it back"
+    warn "$TRANSFORMER_STS is still at ${n:-?} replicas after helm upgrade -- scaling it back to $saved"
+    TRANSFORMER_RESTORE_REPLICAS="$saved"
     transformer_restore || true
   fi
 }
