@@ -1200,7 +1200,13 @@ EOF
   rollup_resume
 }
 
-transformer_kubectl() { kubectl -n "$NAMESPACE" "$@" statefulset "$TRANSFORMER_STS"; }
+# Runs `kubectl <verb> statefulset <metrics-transformer> <args...>`. The resource
+# must come right after the verb: `kubectl annotate` rejects key=value pairs placed
+# before it ("all resources must be specified before annotation changes").
+transformer_kubectl() {
+  local verb="$1"; shift
+  kubectl -n "$NAMESPACE" "$verb" statefulset "$TRANSFORMER_STS" "$@"
+}
 
 # Prints the replica count saved by a scale-down ("" if none).
 transformer_saved_replicas() {
