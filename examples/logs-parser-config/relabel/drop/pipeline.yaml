@@ -1,0 +1,5 @@
+- relabel:
+    args:
+      - action: "drop"
+      - sourceLabels: "@path"
+      - regex: "/healthz"

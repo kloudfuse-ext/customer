@@ -1,0 +1,5 @@
+- logFmt:
+    conditions:
+      - matcher: "#source"
+        value: "auth-service"
+        op: "=="

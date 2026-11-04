@@ -1,0 +1,5 @@
+- relabel:
+    args:
+      - action: "label_map"
+      - regex: "^source$"
+      - replacement: "service_name"
