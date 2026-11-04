@@ -26,16 +26,30 @@
 #   kfuse-upgrade.sh run-job  <job-name> [options]
 #   kfuse-upgrade.sh flush-rollup [options]
 #
-# Post-upgrade step: upgrading from < 4.4.0 to >= 4.4.0 flushes the legacy
-# kf_metrics_rollup_topic out of the kf_metrics_rollup table (wait for lag 0
-# on the legacy segments, pause consumption until all segments seal, resume
-# from lastConsumed). Interactive runs are asked first; 'flush-rollup' runs
-# it on its own (e.g. after skipping it, or to finish an interrupted run).
-# The gate compares major.minor.patch. 4.3.1 release candidates already had
-# the new rollup topics; their base version 4.3.1 is below 4.4.0, so
-# upgrading one to 4.4.0 runs the flush again, which only pauses and resumes
-# the table. If the upgrade succeeds but the flush does not, the script
-# exits 3 (do not roll back).
+# Pre-upgrade step: upgrading from < 4.4.0 to >= 4.4.0 first scales the
+# metrics-transformer StatefulSet to 0 (it stops writing kf_metrics_rollup_topic)
+# and flushes the kf_metrics_rollup table (wait for lag 0, pause consumption
+# until all segments seal, resume from lastConsumed), then runs helm upgrade,
+# which scales metrics-transformer back up. If anything fails before helm
+# upgrade succeeds, metrics-transformer is scaled back up and the upgrade
+# stops. The original replica count is kept in the StatefulSet annotation
+# kfuse-upgrade/transformer-replicas, so a re-run after a crash still
+# restores it. These steps run without asking (--yes is not needed);
+# --skip-rollup-flush upgrades without them. 'flush-rollup' runs only the
+# flush (e.g. to finish an interrupted one); it does not scale anything.
+# The gate compares major.minor.patch, so a 4.3.1 release candidate counts
+# as below 4.4.0.
+#
+# Rollback step: the 4.4.0+ chart drains the legacy kf_metrics_rollup_topic
+# by setting retention.bytes/retention.ms/segment.bytes/segment.ms on it
+# (it keeps about a minute of data). Those topic overrides survive a helm
+# rollback, and a < 4.4.0 metrics-transformer writes that topic again. So
+# 'rollback' from >= 4.4.0 to a revision whose chart is < 4.4.0 first deletes
+# the four overrides (kafka-configs.sh in a broker pod) BEFORE helm rollback
+# restarts anything; if it cannot, it stops with nothing rolled back.
+# PLAINTEXT and SASL_PLAINTEXT client listeners are handled from the broker
+# pod env; for TLS pass --kafka-command-config. --skip-rollup-topic-reset
+# skips it (only if you have reset the topic yourself).
 #
 # Options:
 #   -n <namespace>        Kubernetes namespace (default: kfuse)
@@ -63,9 +77,16 @@
 #   --skip-deps           Skip 'helm dep update' for local installs
 #   --job-timeout <sec>   Timeout waiting for each job (default: 1800)
 #   --pod-timeout <sec>   Timeout waiting for each pod (default: 900)
-#   --yes                 Don't prompt before the restart phase or the
-#                         post-upgrade kf_metrics_rollup flush (runs it)
-#   --skip-rollup-flush   Skip the post-upgrade kf_metrics_rollup flush
+#   --yes                 Don't prompt before the restart phase
+#   --skip-rollup-flush   Skip the pre-upgrade metrics-transformer scale-down
+#                         and kf_metrics_rollup flush
+#   --kafka-command-config <client.properties>
+#                         (rollback) Kafka client config for resetting
+#                         kf_metrics_rollup_topic, e.g. for a TLS listener;
+#                         copied into the broker pod for the call
+#   --skip-rollup-topic-reset
+#                         (rollback) Don't delete the drain overrides on
+#                         kf_metrics_rollup_topic when rolling back below 4.4.0
 #   --dry-run             (upgrade) render with --dry-run=server and diff
 #                         against the live release manifest; no changes made
 #
@@ -118,15 +139,18 @@ SKIP_DEPS=false
 ASSUME_YES=false
 DRY_RUN=false
 SKIP_ROLLUP_FLUSH=false
+SKIP_ROLLUP_TOPIC_RESET=false
+KAFKA_COMMAND_CONFIG=""
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/kfuse-upgrade.XXXXXX")"
 LOCK_HELD=false
 ROLLUP_RESUME_POD=""      # controller pod, set while this run has the rollup table paused
-ROLLUP_FLUSH_FAILED=false
+TRANSFORMER_RESTORE_REPLICAS=""  # set while this run has metrics-transformer scaled down
 cleanup() {
   # Finish the resume even if the operator hits Ctrl-C again.
   trap '' INT TERM
   rollup_resume || true
+  transformer_restore || true
   if [ "$LOCK_HELD" = true ]; then
     kubectl -n "$NAMESPACE" delete configmap "kfuse-upgrade-lock-$RELEASE" --ignore-not-found >/dev/null 2>&1 || true
   fi
@@ -207,6 +231,8 @@ while [ $# -gt 0 ]; do
     --yes|-y) ASSUME_YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --skip-rollup-flush) SKIP_ROLLUP_FLUSH=true; shift ;;
+    --skip-rollup-topic-reset) SKIP_ROLLUP_TOPIC_RESET=true; shift ;;
+    --kafka-command-config) KAFKA_COMMAND_CONFIG="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) die "unknown option: $1" ;;
     *) POSITIONAL="$POSITIONAL $1"; shift ;;
@@ -986,29 +1012,32 @@ snapshot_schemas() { # <outfile>
 }
 
 # ---------------------------------------------------------------------------
-# Post-upgrade: flush the legacy kf_metrics_rollup topic (from <4.4.0 to >=4.4.0)
+# Pre-upgrade: flush kf_metrics_rollup (from <4.4.0 to >=4.4.0)
 # ---------------------------------------------------------------------------
-# 4.4.0 moves kf_metrics_rollup from kf_metrics_rollup_topic onto new topics
-# (4.3.1 release candidates already carried this change).
-# The table keeps consuming the legacy topic (partition ids < 10000; new
-# topics are numbered 10000+), but nothing writes to it anymore: a legacy
-# consuming segment holding rows only seals at the time threshold, and until
-# then those rows are exposed to loss on restart (bugzilla#1794). Empty
-# segments never seal but hold no data. Once the legacy segments have caught
-# up (lag 0, offsets stable), pause consumption -- which seals every consuming
-# segment -- then resume from where each segment stopped. Pausing while
-# records are still unread would leave them in new consuming segments that
-# never seal, hence the lag wait first.
+# 4.4.0 moves kf_metrics_rollup from kf_metrics_rollup_topic onto new topics.
+# After the upgrade nothing writes the legacy topic: a consuming segment
+# holding rows from it only seals at the time threshold, and until then those
+# rows are exposed to loss on restart (bugzilla#1794). So before helm upgrade:
+# scale metrics-transformer (the producer) to 0, wait until the table has read
+# everything (lag 0, offsets stable), pause consumption -- which seals every
+# consuming segment -- then resume from where each segment stopped. helm
+# upgrade then scales metrics-transformer back up.
 #
-# The pause is table-wide (legacy and new topics), so any failure after it
-# must resume: ROLLUP_RESUME_POD is set before pausing and the EXIT trap
-# resumes while it is set. Resuming with a commit in flight is safe.
-# Functions here return non-zero rather than die: a flush failure must not
-# read as a failed upgrade.
+# The pause is table-wide, so any failure after it must resume:
+# ROLLUP_RESUME_POD is set before pausing and the EXIT trap resumes while it
+# is set. Likewise TRANSFORMER_RESTORE_REPLICAS is set before scaling down and
+# the trap scales metrics-transformer back up until helm upgrade succeeds.
+# The count is also written to the StatefulSet annotation
+# TRANSFORMER_REPLICAS_ANNOTATION before scaling down, so a run killed without
+# its trap (kill -9, lost runner) is recovered by the next one: the
+# pre-upgrade step re-arms from it, and every upgrade reconciles it after
+# helm. Resuming with a commit in flight is safe.
 
 ROLLUP_TABLE="kf_metrics_rollup"
 ROLLUP_FLUSH_VERSION="4.4.0"
 ROLLUP_PAUSE_COMMENT="flush-legacy-rollup-topic"
+TRANSFORMER_STS="metrics-transformer"
+TRANSFORMER_REPLICAS_ANNOTATION="kfuse-upgrade/transformer-replicas"
 
 pinot_api() { # <controller-pod> <GET|POST> <path>
   kubectl -n "$NAMESPACE" exec --request-timeout=60s "$1" -- curl -sf --max-time 30 -X "$2" "http://localhost:9000$3"
@@ -1039,16 +1068,15 @@ rollup_controller() {
   return 0
 }
 
-# Prints "<lagging> <total> <offsets-signature>" for consuming segments of the
-# legacy topic (partition < 10000): lagging = segments where any replica is
-# not reporting lag 0, plus servers that did not answer. Keeps the response
-# in $WORKDIR/rollup-consuming.json for rollup_legacy_all_empty.
-rollup_legacy_lag() { # <controller-pod>
+# Prints "<lagging> <total> <offsets-signature>" for the table's consuming
+# segments: lagging = segments where any replica is not reporting lag 0, plus
+# servers that did not answer. Keeps the response
+# in $WORKDIR/rollup-consuming.json for rollup_all_empty.
+rollup_lag() { # <controller-pod>
   pinot_api "$1" GET "/tables/$ROLLUP_TABLE/consumingSegmentsInfo" > "$WORKDIR/rollup-consuming.json" || return 1
   jq -r '
     ((.serversFailingToRespond // 0) + (.serversUnparsableRespond // 0)) as $bad
-    | [ (._segmentToConsumingInfoMap // {}) | to_entries[]
-        | select((.key | split("__")[1] | tonumber) < 10000) ] as $segs
+    | [ (._segmentToConsumingInfoMap // {}) | to_entries[] ] as $segs
     | ([ $segs[]
          | select((.value | length) == 0
                   or any(.value[]; (.partitionOffsetInfo.recordsLagMap // {})
@@ -1059,13 +1087,12 @@ rollup_legacy_lag() { # <controller-pod>
     | "\($lagging + $bad) \($segs | length) \($sig)"' "$WORKDIR/rollup-consuming.json"
 }
 
-# True only when every legacy consuming segment is confirmed empty (all
+# True only when every consuming segment is confirmed empty (all
 # replicas still at the segment's start offset). Unknown counts as not empty.
-rollup_legacy_all_empty() { # <controller-pod>
+rollup_all_empty() { # <controller-pod>
   pinot_api "$1" GET "/segments/$ROLLUP_TABLE/zkmetadata?type=REALTIME" > "$WORKDIR/rollup-zk.json" 2>/dev/null || return 1
   jq -e --slurpfile zk "$WORKDIR/rollup-zk.json" '
     [ (._segmentToConsumingInfoMap // {}) | to_entries[]
-      | select((.key | split("__")[1] | tonumber) < 10000)
       | $zk[0][.key]["segment.realtime.startOffset"] as $start
       | ($start != null) and all(.value[];
           (.partitionOffsetInfo.currentOffsetsMap // {})
@@ -1094,7 +1121,7 @@ flush_rollup() {
   local ctrl deadline status paused owner out lagging total sig prev_sig="" n
   ctrl="$(rollup_controller)" || return 1
   [ -n "$ctrl" ] || { info "table $ROLLUP_TABLE not found on any pinot controller -- nothing to flush"; return 0; }
-  log "Flushing legacy $ROLLUP_TABLE consuming segments (controller: $ctrl)"
+  log "Flushing $ROLLUP_TABLE consuming segments (controller: $ctrl)"
 
   status="$(pinot_api "$ctrl" GET "/tables/$ROLLUP_TABLE/pauseStatus" 2>/dev/null)" \
     || { warn "cannot read pauseStatus of $ROLLUP_TABLE"; return 1; }
@@ -1111,36 +1138,36 @@ flush_rollup() {
     info "$ROLLUP_TABLE is already paused by an earlier flush -- continuing at the seal wait"
     ROLLUP_RESUME_POD="$ctrl"
   else
-    # 1. Wait for the legacy-topic segments to read everything (lag 0), with
-    # offsets unchanged across two polls: an old producer still rolling out
-    # could otherwise write to the legacy topic after the pause.
+    # 1. Wait for the consuming segments to read everything (lag 0), with
+    # offsets unchanged across two polls: a producer still shutting down
+    # could otherwise write after the pause.
     deadline=$(( $(date +%s) + JOB_TIMEOUT ))
     while :; do
-      out="$(rollup_legacy_lag "$ctrl" 2>/dev/null || true)"
+      out="$(rollup_lag "$ctrl" 2>/dev/null || true)"
       lagging="" total="" sig=""
       read -r lagging total sig <<EOF
 $out
 EOF
       if [ "$lagging" = "0" ]; then
-        [ "$total" != "0" ] || { info "no legacy-topic consuming segments -- nothing to flush"; return 0; }
+        [ "$total" != "0" ] || { info "no consuming segments -- nothing to flush"; return 0; }
         [ "$sig" = "$prev_sig" ] && break
-        info "$total legacy-topic consuming segment(s) at lag 0 -- confirming no new writes..."
+        info "$total consuming segment(s) at lag 0 -- confirming no new writes..."
       elif [ -n "$lagging" ]; then
-        info "$lagging of $total legacy-topic consuming segment(s)/server(s) not at lag 0..."
+        info "$lagging of $total consuming segment(s)/server(s) not at lag 0..."
       else
         info "could not read consumingSegmentsInfo, retrying..."
       fi
       prev_sig="$sig"
       if [ "$(date +%s)" -ge "$deadline" ]; then
-        warn "legacy $ROLLUP_TABLE segments did not settle at lag 0 within ${JOB_TIMEOUT}s (raise --job-timeout). Nothing was paused."
+        warn "$ROLLUP_TABLE segments did not settle at lag 0 within ${JOB_TIMEOUT}s (raise --job-timeout). Nothing was paused."
         return 1
       fi
       sleep 15
     done
-    info "all $total legacy-topic consuming segment(s) at lag 0"
+    info "all $total consuming segment(s) at lag 0"
 
-    if rollup_legacy_all_empty "$ctrl"; then
-      info "legacy-topic consuming segments are all empty -- nothing to flush, skipping the pause"
+    if rollup_all_empty "$ctrl"; then
+      info "consuming segments are all empty -- nothing to flush, skipping the pause"
       return 0
     fi
 
@@ -1173,30 +1200,238 @@ EOF
   rollup_resume
 }
 
-# Runs flush_rollup when upgrading across ROLLUP_FLUSH_VERSION, after asking
-# (interactive runs without --yes).
-maybe_flush_rollup() { # <from-version> <to-version>
-  local from="$1" to="$2" reply
-  [ -n "$from" ] && [ -n "$to" ] || return 0
-  if ! sort -V </dev/null >/dev/null 2>&1; then
-    warn "sort -V unavailable; cannot tell whether $from -> $to needs the $ROLLUP_TABLE flush. If crossing $ROLLUP_FLUSH_VERSION, run: $0 flush-rollup -n $NAMESPACE"
+transformer_kubectl() { kubectl -n "$NAMESPACE" "$@" statefulset "$TRANSFORMER_STS"; }
+
+# Prints the replica count saved by a scale-down ("" if none).
+transformer_saved_replicas() {
+  transformer_kubectl get -o "jsonpath={.metadata.annotations.kfuse-upgrade/transformer-replicas}" 2>/dev/null || true
+}
+
+transformer_clear_annotation() {
+  transformer_kubectl annotate "${TRANSFORMER_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 \
+    || warn "cannot remove annotation $TRANSFORMER_REPLICAS_ANNOTATION from $TRANSFORMER_STS -- remove it by hand: kubectl -n $NAMESPACE annotate statefulset $TRANSFORMER_STS ${TRANSFORMER_REPLICAS_ANNOTATION}-"
+}
+
+# Scales metrics-transformer back to the replica count it was scaled down
+# from (TRANSFORMER_RESTORE_REPLICAS), then clears the annotation; no-op if
+# nothing is armed.
+transformer_restore() {
+  local n="$TRANSFORMER_RESTORE_REPLICAS"
+  [ -n "$n" ] || return 0
+  if transformer_kubectl scale --replicas="$n" >/dev/null 2>&1; then
+    TRANSFORMER_RESTORE_REPLICAS=""
+    info "$TRANSFORMER_STS scaled back to $n replica(s)"
+    transformer_clear_annotation
     return 0
   fi
+  warn "$TRANSFORMER_STS is still scaled to 0 and metrics are not being transformed. Scale it back now: kubectl -n $NAMESPACE scale statefulset $TRANSFORMER_STS --replicas=$n"
+  return 1
+}
+
+# Scales metrics-transformer to 0 and waits for its pods to stop. The
+# original count is annotated on the StatefulSet first; if it is already at 0
+# with a saved count (a crashed earlier run), restore is re-armed from it. A
+# missing StatefulSet is not an error (nothing writes the rollup topic).
+transformer_scale_down() {
+  local n saved deadline
+  if ! n="$(transformer_kubectl get -o jsonpath='{.spec.replicas}' 2>"$WORKDIR/transformer.err")"; then
+    grep -qi 'not found' "$WORKDIR/transformer.err" \
+      && { info "no $TRANSFORMER_STS StatefulSet -- nothing to scale down"; return 0; }
+    warn "cannot read $TRANSFORMER_STS: $(tail -1 "$WORKDIR/transformer.err" 2>/dev/null)"
+    return 1
+  fi
+  if [ "${n:-0}" = "0" ]; then
+    saved="$(transformer_saved_replicas)"
+    if [ -n "$saved" ] && [ "$saved" != "0" ]; then
+      TRANSFORMER_RESTORE_REPLICAS="$saved"
+      info "$TRANSFORMER_STS is at 0 replicas from an earlier run (original: $saved) -- will restore it"
+    else
+      info "$TRANSFORMER_STS is already at 0 replicas"
+    fi
+  else
+    transformer_kubectl annotate --overwrite "$TRANSFORMER_REPLICAS_ANNOTATION=$n" >/dev/null \
+      || { warn "cannot record $TRANSFORMER_STS replica count -- not scaling it down"; return 1; }
+    # Armed before the call: the scale can land even if the response is lost.
+    TRANSFORMER_RESTORE_REPLICAS="$n"
+    transformer_kubectl scale --replicas=0 >/dev/null \
+      || { warn "cannot scale $TRANSFORMER_STS to 0"; return 1; }
+    info "scaled $TRANSFORMER_STS from $n to 0 replicas"
+  fi
+  deadline=$(( $(date +%s) + POD_TIMEOUT ))
+  while :; do
+    n="$(transformer_kubectl get -o jsonpath='{.status.replicas}' 2>/dev/null || echo "?")"
+    [ "${n:-0}" = "0" ] && { info "$TRANSFORMER_STS pods stopped"; return 0; }
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      warn "$TRANSFORMER_STS still has $n pod(s) after ${POD_TIMEOUT}s (raise --pod-timeout)"
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# Prints the chart version being installed: TARGET, or Chart.yaml's version
+# for 'local'.
+target_version() {
+  if [ "$TARGET" = "local" ]; then
+    sed -n 's/^version:[[:space:]]*["'"'"']\{0,1\}\([^"'"'"' ]*\).*/\1/p' "$CHART_DIR/Chart.yaml" 2>/dev/null | head -1
+  else
+    echo "$TARGET"
+  fi
+}
+
+# Before helm upgrade, when upgrading across ROLLUP_FLUSH_VERSION: scale
+# metrics-transformer to 0 and flush kf_metrics_rollup. Required when
+# crossing 4.4.0, so it runs without asking. Dies on failure, with
+# metrics-transformer scaled back up by the EXIT trap; nothing has been
+# upgraded yet.
+pre_upgrade_rollup_flush() { # <from-version> <to-version>
+  local from="$1" to="$2"
+  [ -n "$from" ] || return 0
+  [ -n "$to" ] || die "cannot tell the target chart version -- unable to decide whether the pre-upgrade $ROLLUP_TABLE flush is needed (use --skip-rollup-flush to proceed without it)"
+  sort -V </dev/null >/dev/null 2>&1 \
+    || die "sort -V unavailable; cannot tell whether $from -> $to needs the pre-upgrade $ROLLUP_TABLE flush (use --skip-rollup-flush to proceed without it)"
   version_lt "$from" "$ROLLUP_FLUSH_VERSION" && ! version_lt "$to" "$ROLLUP_FLUSH_VERSION" || return 0
-  log "Post-upgrade: $from -> $to crosses $ROLLUP_FLUSH_VERSION -- $ROLLUP_TABLE must flush the legacy kf_metrics_rollup_topic"
+  log "Phase 0b: $from -> $to crosses $ROLLUP_FLUSH_VERSION -- scale down $TRANSFORMER_STS and flush $ROLLUP_TABLE before upgrading"
   if [ "$SKIP_ROLLUP_FLUSH" = true ]; then
-    warn "skipped (--skip-rollup-flush); run it later with: $0 flush-rollup -n $NAMESPACE"
+    warn "skipped (--skip-rollup-flush)"
     return 0
   fi
-  if [ "$ASSUME_YES" = false ] && [ -t 0 ]; then
-    printf '\nWait for legacy-topic lag 0, then pause and resume %s consumption? [y/N] ' "$ROLLUP_TABLE"
-    read -r reply
-    case "$reply" in
-      y|Y|yes) : ;;
-      *) warn "skipped; run it later with: $0 flush-rollup -n $NAMESPACE"; return 0 ;;
-    esac
+  transformer_scale_down || die "$TRANSFORMER_STS scale-down failed -- upgrade not started"
+  flush_rollup || die "$ROLLUP_TABLE flush did not finish -- upgrade not started"
+  info "metrics are queued in Kafka until $TRANSFORMER_STS is back -- proceeding with the upgrade"
+}
+
+# ---------------------------------------------------------------------------
+# Rollback: undo the 4.4.0 drain of kf_metrics_rollup_topic
+# ---------------------------------------------------------------------------
+LEGACY_ROLLUP_TOPIC="kf_metrics_rollup_topic"
+ROLLUP_DRAIN_CONFIGS="retention.bytes retention.ms segment.bytes segment.ms"
+
+rollup_topic_reset_manual() {
+  warn "reset it yourself, then re-run with --skip-rollup-topic-reset:"
+  warn "  kafka-configs.sh --bootstrap-server <broker>:9092 [--command-config <client.properties>] --alter \\"
+  warn "    --entity-type topics --entity-name $LEGACY_ROLLUP_TOPIC --delete-config $(printf '%s' "$ROLLUP_DRAIN_CONFIGS" | tr ' ' ',')"
+}
+
+# Delete whichever drain overrides are set on kf_metrics_rollup_topic, from a
+# broker pod (localhost:9092, the chart's client listener). Dies -- before
+# anything is rolled back -- when it can't, so a < 4.4.0 writer never comes
+# back onto a topic that keeps a minute of data.
+rollup_topic_reset() { # <target-revision>
+  local rev="$1" current target_chart target pod sts class replicas out present
+  current="$(installed_version)"
+  [ -n "$current" ] || return 0
+  version_lt "$current" "$ROLLUP_FLUSH_VERSION" && return 0
+  target_chart="$(helm history "$RELEASE" -n "$NAMESPACE" -o json \
+    | jq -r --arg r "$rev" '.[] | select((.revision | tostring) == $r) | .chart // empty')"
+  target="${target_chart#kfuse-}"
+  if [ -n "$target" ] && ! version_lt "$target" "$ROLLUP_FLUSH_VERSION"; then
+    return 0
   fi
-  flush_rollup || ROLLUP_FLUSH_FAILED=true
+  log "Phase 0: rolling back $current -> ${target:-revision $rev (version unknown)} -- reset the drain overrides on $LEGACY_ROLLUP_TOPIC first"
+  if [ "$SKIP_ROLLUP_TOPIC_RESET" = true ]; then
+    warn "skipped (--skip-rollup-topic-reset): the < $ROLLUP_FLUSH_VERSION metrics-transformer will write a topic that keeps ~1 minute of data unless it was reset"
+    return 0
+  fi
+  # cmd_rollback has already discovered the release's StatefulSets.
+  pod=""
+  while read -r sts class replicas; do
+    if [ "$class" = "kafka-broker" ] && [ "${replicas:-0}" -gt 0 ]; then pod="$sts-0"; break; fi
+  done < "$WORKDIR/pre-sts.list"
+  if [ -z "$pod" ]; then
+    warn "no in-cluster Kafka broker StatefulSet for release '$RELEASE' (external Kafka?)"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  fi
+  if [ -n "$KAFKA_COMMAND_CONFIG" ]; then
+    [ -f "$KAFKA_COMMAND_CONFIG" ] || die "--kafka-command-config file not found: $KAFKA_COMMAND_CONFIG"
+    kubectl -n "$NAMESPACE" exec -i -c kafka "$pod" -- bash -c 'cat > /tmp/kfuse-rollup-reset.properties' < "$KAFKA_COMMAND_CONFIG" \
+      || die "cannot copy --kafka-command-config into $pod -- rollback not started"
+  fi
+  # In-pod: pick the client config (given file, SASL_PLAINTEXT from the
+  # bitnami env, or none for PLAINTEXT), list the dynamic topic configs,
+  # delete the drain keys that are set, and print what is left.
+  out="$(kubectl -n "$NAMESPACE" exec --request-timeout=180s -c kafka "$pod" -- env \
+      TOPIC="$LEGACY_ROLLUP_TOPIC" KEYS="$ROLLUP_DRAIN_CONFIGS" GIVEN="${KAFKA_COMMAND_CONFIG:+yes}" bash -c '
+    set -e
+    # The broker already holds JMX_PORT; kafka-configs.sh fails if it is set.
+    unset JMX_PORT
+    cfg=/tmp/kfuse-rollup-reset.properties
+    args=""
+    if [ "$GIVEN" = yes ]; then
+      args="--command-config $cfg"
+    else
+      case ",$KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP," in
+        *,CLIENT:PLAINTEXT,*) ;;
+        *,CLIENT:SASL_PLAINTEXT,*)
+          user="${KAFKA_CLIENT_USERS%%,*}"; pass="${KAFKA_CLIENT_PASSWORDS%%,*}"
+          [ -n "$user" ] || { echo KFUSE_RESET_NEEDS_CONFIG; exit 0; }
+          printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"%s\" password=\"%s\";\n" "$user" "$pass" > "$cfg"
+          args="--command-config $cfg" ;;
+        *) echo KFUSE_RESET_NEEDS_CONFIG; exit 0 ;;
+      esac
+    fi
+    trap "rm -f $cfg" EXIT
+    # Dynamic topic configs, one "  key=value sensitive=... synonyms=..." line each.
+    # A failed describe must fail the call, not read as "nothing set".
+    set_keys() {
+      local d k found=""
+      d="$(kafka-configs.sh --bootstrap-server localhost:9092 $args --entity-type topics --entity-name "$TOPIC" --describe)" || exit 1
+      for k in $KEYS; do
+        printf "%s\n" "$d" | grep -Fq " $k=" && found="$found${found:+,}$k"
+      done
+      echo "$found"
+    }
+    keys="$(set_keys)"
+    if [ -n "$keys" ]; then
+      kafka-configs.sh --bootstrap-server localhost:9092 $args --alter --entity-type topics --entity-name "$TOPIC" --delete-config "$keys" >/dev/null
+      echo "KFUSE_RESET_DELETED $keys"
+    else
+      echo KFUSE_RESET_NONE
+    fi
+    left="$(set_keys)"
+    [ -z "$left" ] || echo "KFUSE_RESET_LEFT $left"
+    exit 0' 2>"$WORKDIR/rollup-reset.err")" || {
+    warn "kafka-configs.sh in $pod failed: $(tail -1 "$WORKDIR/rollup-reset.err" 2>/dev/null)"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  }
+  if printf '%s\n' "$out" | grep -q KFUSE_RESET_NEEDS_CONFIG; then
+    warn "$pod's client listener needs TLS or credentials the script can't build -- pass --kafka-command-config <client.properties>"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  fi
+  if printf '%s\n' "$out" | grep -q KFUSE_RESET_LEFT; then
+    warn "still set on $LEGACY_ROLLUP_TOPIC after the reset: $(printf '%s\n' "$out" | sed -n 's/^KFUSE_RESET_LEFT //p')"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  fi
+  present="$(printf '%s\n' "$out" | sed -n 's/^KFUSE_RESET_DELETED //p')"
+  if [ -n "$present" ]; then
+    info "deleted $present on $LEGACY_ROLLUP_TOPIC; it is back on the broker defaults"
+  else
+    info "no drain overrides set on $LEGACY_ROLLUP_TOPIC; nothing to reset"
+  fi
+}
+
+# After helm upgrade, on every upgrade: helm normally restores
+# metrics-transformer's replicas. If it is still at 0 and a count was saved
+# (by this run, or by an earlier run that died without its trap), scale it
+# back; then clear the annotation.
+post_helm_transformer_check() {
+  local n saved
+  n="$(transformer_kubectl get -o jsonpath='{.spec.replicas}' 2>/dev/null)" || return 0
+  saved="${TRANSFORMER_RESTORE_REPLICAS:-$(transformer_saved_replicas)}"
+  [ -n "$saved" ] || return 0
+  if [ -n "$n" ] && [ "$n" != "0" ]; then
+    info "helm scaled $TRANSFORMER_STS back to $n replica(s)"
+    TRANSFORMER_RESTORE_REPLICAS=""
+    transformer_clear_annotation
+  else
+    warn "$TRANSFORMER_STS is still at ${n:-?} replicas after helm upgrade -- scaling it back to $saved"
+    TRANSFORMER_RESTORE_REPLICAS="$saved"
+    transformer_restore || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1373,6 +1608,9 @@ cmd_upgrade() {
   log "Phase 0: preflight (namespace=$NAMESPACE release=$RELEASE target=$TARGET install=$IS_INSTALL)"
   local from_version=""
   [ "$IS_INSTALL" = false ] && from_version="$(installed_version)"
+  # Before anything is pinned or deleted: on decline/failure this dies with
+  # the cluster untouched (the EXIT trap resumes/scales back).
+  pre_upgrade_rollup_flush "$from_version" "$(target_version)"
   delete_stale_jobs
   snapshot_schemas "$WORKDIR/schemas.pre"
   if [ "$IS_INSTALL" = false ]; then
@@ -1389,6 +1627,7 @@ cmd_upgrade() {
   # shellcheck disable=SC2086
   helm upgrade --install --create-namespace "$RELEASE" $CHART_ARGS_STR -n "$NAMESPACE" \
     -f "$VALUES_FILE" $VALUES_ARGS -f "$ONDELETE_FILE" $SET_ARGS
+  post_helm_transformer_check
   discover_sts > "$WORKDIR/post-sts.list"
   assert_strategies "$WORKDIR/post-sts.list"
 
@@ -1424,20 +1663,7 @@ cmd_upgrade() {
   cmd_status || die "verification failed -- see stale components above"
   revert_strategies
 
-  # helm rewrote kfuse-version to the new chart version (also covers 'local').
-  local to_version
-  if to_version="$(installed_version)" && { [ -n "$to_version" ] || [ -z "$from_version" ]; }; then
-    maybe_flush_rollup "$from_version" "$to_version"
-  else
-    warn "cannot read the upgraded version -- unable to tell whether the $ROLLUP_TABLE flush is needed"
-    ROLLUP_FLUSH_FAILED=true
-  fi
   log "Upgrade complete."
-  if [ "$ROLLUP_FLUSH_FAILED" = true ]; then
-    warn "the upgrade itself succeeded (no rollback needed), but the $ROLLUP_TABLE flush did not finish."
-    warn "See the messages above, then run: $0 flush-rollup -n $NAMESPACE"
-    exit 3
-  fi
 }
 
 cmd_status() {
@@ -1560,6 +1786,8 @@ cmd_rollback() {
     warn "revision $target_rev predates the orchestrator (managed StatefulSets not uniformly OnDelete):"
     warn "helm will roll all components concurrently, like a plain 'helm rollback'"
   fi
+  # Before helm rollback restarts anything (metrics-transformer included).
+  rollup_topic_reset "$target_rev"
   log "Rolling back release $RELEASE (revision: $target_rev)"
   delete_stale_jobs
   snapshot_schemas "$WORKDIR/schemas.pre"
