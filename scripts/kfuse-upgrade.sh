@@ -40,6 +40,17 @@
 # The gate compares major.minor.patch, so a 4.3.1 release candidate counts
 # as below 4.4.0.
 #
+# Rollback step: the 4.4.0+ chart drains the legacy kf_metrics_rollup_topic
+# by setting retention.bytes/retention.ms/segment.bytes/segment.ms on it
+# (it keeps about a minute of data). Those topic overrides survive a helm
+# rollback, and a < 4.4.0 metrics-transformer writes that topic again. So
+# 'rollback' from >= 4.4.0 to a revision whose chart is < 4.4.0 first deletes
+# the four overrides (kafka-configs.sh in a broker pod) BEFORE helm rollback
+# restarts anything; if it cannot, it stops with nothing rolled back.
+# PLAINTEXT and SASL_PLAINTEXT client listeners are handled from the broker
+# pod env; for TLS pass --kafka-command-config. --skip-rollup-topic-reset
+# skips it (only if you have reset the topic yourself).
+#
 # Options:
 #   -n <namespace>        Kubernetes namespace (default: kfuse)
 #   -r <release>          Helm release name (default: kfuse)
@@ -69,6 +80,13 @@
 #   --yes                 Don't prompt before the restart phase
 #   --skip-rollup-flush   Skip the pre-upgrade metrics-transformer scale-down
 #                         and kf_metrics_rollup flush
+#   --kafka-command-config <client.properties>
+#                         (rollback) Kafka client config for resetting
+#                         kf_metrics_rollup_topic, e.g. for a TLS listener;
+#                         copied into the broker pod for the call
+#   --skip-rollup-topic-reset
+#                         (rollback) Don't delete the drain overrides on
+#                         kf_metrics_rollup_topic when rolling back below 4.4.0
 #   --dry-run             (upgrade) render with --dry-run=server and diff
 #                         against the live release manifest; no changes made
 #
@@ -121,6 +139,8 @@ SKIP_DEPS=false
 ASSUME_YES=false
 DRY_RUN=false
 SKIP_ROLLUP_FLUSH=false
+SKIP_ROLLUP_TOPIC_RESET=false
+KAFKA_COMMAND_CONFIG=""
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/kfuse-upgrade.XXXXXX")"
 LOCK_HELD=false
@@ -211,6 +231,8 @@ while [ $# -gt 0 ]; do
     --yes|-y) ASSUME_YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --skip-rollup-flush) SKIP_ROLLUP_FLUSH=true; shift ;;
+    --skip-rollup-topic-reset) SKIP_ROLLUP_TOPIC_RESET=true; shift ;;
+    --kafka-command-config) KAFKA_COMMAND_CONFIG="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) die "unknown option: $1" ;;
     *) POSITIONAL="$POSITIONAL $1"; shift ;;
@@ -1279,6 +1301,119 @@ pre_upgrade_rollup_flush() { # <from-version> <to-version>
   info "metrics are queued in Kafka until $TRANSFORMER_STS is back -- proceeding with the upgrade"
 }
 
+# ---------------------------------------------------------------------------
+# Rollback: undo the 4.4.0 drain of kf_metrics_rollup_topic
+# ---------------------------------------------------------------------------
+LEGACY_ROLLUP_TOPIC="kf_metrics_rollup_topic"
+ROLLUP_DRAIN_CONFIGS="retention.bytes retention.ms segment.bytes segment.ms"
+
+rollup_topic_reset_manual() {
+  warn "reset it yourself, then re-run with --skip-rollup-topic-reset:"
+  warn "  kafka-configs.sh --bootstrap-server <broker>:9092 [--command-config <client.properties>] --alter \\"
+  warn "    --entity-type topics --entity-name $LEGACY_ROLLUP_TOPIC --delete-config $(printf '%s' "$ROLLUP_DRAIN_CONFIGS" | tr ' ' ',')"
+}
+
+# Delete whichever drain overrides are set on kf_metrics_rollup_topic, from a
+# broker pod (localhost:9092, the chart's client listener). Dies -- before
+# anything is rolled back -- when it can't, so a < 4.4.0 writer never comes
+# back onto a topic that keeps a minute of data.
+rollup_topic_reset() { # <target-revision>
+  local rev="$1" current target_chart target pod sts class replicas out present
+  current="$(installed_version)"
+  [ -n "$current" ] || return 0
+  version_lt "$current" "$ROLLUP_FLUSH_VERSION" && return 0
+  target_chart="$(helm history "$RELEASE" -n "$NAMESPACE" -o json \
+    | jq -r --arg r "$rev" '.[] | select((.revision | tostring) == $r) | .chart // empty')"
+  target="${target_chart#kfuse-}"
+  if [ -n "$target" ] && ! version_lt "$target" "$ROLLUP_FLUSH_VERSION"; then
+    return 0
+  fi
+  log "Phase 0: rolling back $current -> ${target:-revision $rev (version unknown)} -- reset the drain overrides on $LEGACY_ROLLUP_TOPIC first"
+  if [ "$SKIP_ROLLUP_TOPIC_RESET" = true ]; then
+    warn "skipped (--skip-rollup-topic-reset): the < $ROLLUP_FLUSH_VERSION metrics-transformer will write a topic that keeps ~1 minute of data unless it was reset"
+    return 0
+  fi
+  # cmd_rollback has already discovered the release's StatefulSets.
+  pod=""
+  while read -r sts class replicas; do
+    if [ "$class" = "kafka-broker" ] && [ "${replicas:-0}" -gt 0 ]; then pod="$sts-0"; break; fi
+  done < "$WORKDIR/pre-sts.list"
+  if [ -z "$pod" ]; then
+    warn "no in-cluster Kafka broker StatefulSet for release '$RELEASE' (external Kafka?)"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  fi
+  if [ -n "$KAFKA_COMMAND_CONFIG" ]; then
+    [ -f "$KAFKA_COMMAND_CONFIG" ] || die "--kafka-command-config file not found: $KAFKA_COMMAND_CONFIG"
+    kubectl -n "$NAMESPACE" exec -i -c kafka "$pod" -- bash -c 'cat > /tmp/kfuse-rollup-reset.properties' < "$KAFKA_COMMAND_CONFIG" \
+      || die "cannot copy --kafka-command-config into $pod -- rollback not started"
+  fi
+  # In-pod: pick the client config (given file, SASL_PLAINTEXT from the
+  # bitnami env, or none for PLAINTEXT), list the dynamic topic configs,
+  # delete the drain keys that are set, and print what is left.
+  out="$(kubectl -n "$NAMESPACE" exec --request-timeout=180s -c kafka "$pod" -- env \
+      TOPIC="$LEGACY_ROLLUP_TOPIC" KEYS="$ROLLUP_DRAIN_CONFIGS" GIVEN="${KAFKA_COMMAND_CONFIG:+yes}" bash -c '
+    set -e
+    # The broker already holds JMX_PORT; kafka-configs.sh fails if it is set.
+    unset JMX_PORT
+    cfg=/tmp/kfuse-rollup-reset.properties
+    args=""
+    if [ "$GIVEN" = yes ]; then
+      args="--command-config $cfg"
+    else
+      case ",$KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP," in
+        *,CLIENT:PLAINTEXT,*) ;;
+        *,CLIENT:SASL_PLAINTEXT,*)
+          user="${KAFKA_CLIENT_USERS%%,*}"; pass="${KAFKA_CLIENT_PASSWORDS%%,*}"
+          [ -n "$user" ] || { echo KFUSE_RESET_NEEDS_CONFIG; exit 0; }
+          printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"%s\" password=\"%s\";\n" "$user" "$pass" > "$cfg"
+          args="--command-config $cfg" ;;
+        *) echo KFUSE_RESET_NEEDS_CONFIG; exit 0 ;;
+      esac
+    fi
+    trap "rm -f $cfg" EXIT
+    # Dynamic topic configs, one "  key=value sensitive=... synonyms=..." line each.
+    # A failed describe must fail the call, not read as "nothing set".
+    set_keys() {
+      local d k found=""
+      d="$(kafka-configs.sh --bootstrap-server localhost:9092 $args --entity-type topics --entity-name "$TOPIC" --describe)" || exit 1
+      for k in $KEYS; do
+        printf "%s\n" "$d" | grep -Fq " $k=" && found="$found${found:+,}$k"
+      done
+      echo "$found"
+    }
+    keys="$(set_keys)"
+    if [ -n "$keys" ]; then
+      kafka-configs.sh --bootstrap-server localhost:9092 $args --alter --entity-type topics --entity-name "$TOPIC" --delete-config "$keys" >/dev/null
+      echo "KFUSE_RESET_DELETED $keys"
+    else
+      echo KFUSE_RESET_NONE
+    fi
+    left="$(set_keys)"
+    [ -z "$left" ] || echo "KFUSE_RESET_LEFT $left"
+    exit 0' 2>"$WORKDIR/rollup-reset.err")" || {
+    warn "kafka-configs.sh in $pod failed: $(tail -1 "$WORKDIR/rollup-reset.err" 2>/dev/null)"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  }
+  if printf '%s\n' "$out" | grep -q KFUSE_RESET_NEEDS_CONFIG; then
+    warn "$pod's client listener needs TLS or credentials the script can't build -- pass --kafka-command-config <client.properties>"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  fi
+  if printf '%s\n' "$out" | grep -q KFUSE_RESET_LEFT; then
+    warn "still set on $LEGACY_ROLLUP_TOPIC after the reset: $(printf '%s\n' "$out" | sed -n 's/^KFUSE_RESET_LEFT //p')"
+    rollup_topic_reset_manual
+    die "cannot reset $LEGACY_ROLLUP_TOPIC -- rollback not started"
+  fi
+  present="$(printf '%s\n' "$out" | sed -n 's/^KFUSE_RESET_DELETED //p')"
+  if [ -n "$present" ]; then
+    info "deleted $present on $LEGACY_ROLLUP_TOPIC; it is back on the broker defaults"
+  else
+    info "no drain overrides set on $LEGACY_ROLLUP_TOPIC; nothing to reset"
+  fi
+}
+
 # After helm upgrade, on every upgrade: helm normally restores
 # metrics-transformer's replicas. If it is still at 0 and a count was saved
 # (by this run, or by an earlier run that died without its trap), scale it
@@ -1651,6 +1786,8 @@ cmd_rollback() {
     warn "revision $target_rev predates the orchestrator (managed StatefulSets not uniformly OnDelete):"
     warn "helm will roll all components concurrently, like a plain 'helm rollback'"
   fi
+  # Before helm rollback restarts anything (metrics-transformer included).
+  rollup_topic_reset "$target_rev"
   log "Rolling back release $RELEASE (revision: $target_rev)"
   delete_stale_jobs
   snapshot_schemas "$WORKDIR/schemas.pre"
