@@ -42,7 +42,10 @@
 #   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
 #   helm repo update
 #   helm upgrade --install kloudfuse-otel open-telemetry/opentelemetry-collector \
-#     -n otel --create-namespace -f helm-values.yaml
+#     --version 0.178.3 -n otel --create-namespace -f helm-values.yaml
+#
+# --version pins the chart this file was tested with. A later chart may rename
+# settings; check this file against it before you move the pin.
 # ---------------------------------------------------------------------------
 
 mode: daemonset

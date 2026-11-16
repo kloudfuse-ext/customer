@@ -28,7 +28,7 @@ Cluster-level data has the node's host attributes removed, so deployments, event
 
 ## Prerequisites
 
-- Helm 3.
+- Helm 4.0 or later, which the chart requires. Chart 0.178.3 also renders with Helm 3.17, but only Helm 4 was used to install it in testing.
 - Chart 0.162.0 or later; Collector Contrib 0.153.0 or later.
 - The external hostname of your Kloudfuse cluster.
 - An API key, if ingestion authentication is enabled.
@@ -59,7 +59,7 @@ Cluster-level data has the node's host attributes removed, so deployments, event
    helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
    helm repo update
    helm upgrade --install kloudfuse-otel open-telemetry/opentelemetry-collector \
-     -n otel --create-namespace -f helm-values.yaml
+     --version 0.178.3 -n otel --create-namespace -f helm-values.yaml
    ```
 
 ## Verify
