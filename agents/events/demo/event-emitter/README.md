@@ -55,11 +55,11 @@ kubectl get events -n $NAMESPACE --field-selector involvedObject.name=events-dem
 Once the emitter is running, deploy one of the agent configs in this demo to collect and
 forward these events to Kloudfuse:
 
-- [`../dd-agent/`](../dd-agent/) — Datadog Agent via Helm → events land in the **Events store** (`source="kubernetes"`)
-- [`../otel/`](../otel/) — OpenTelemetry Collector via Helm → events land in **Logs** (`kf_events_agent="otlp"`)
+- [`../dd-agent/`](../dd-agent/) — Datadog Agent via Helm → events appear in the **Events** view (`source="kubernetes"`)
+- [`../otel/`](../otel/) — OpenTelemetry Collector via Helm → events appear in the **Events** view (`kf_events_agent="otlp"`)
 
-> **Note:** The two agents store events in different places in Kloudfuse. Use the agent that matches
-> where you want to query events — Events explorer (dd-agent) or Logs/Loki (otel).
+> **Note:** Both agents' events appear in the Events view. The `kf_events_agent` label tells
+> the OpenTelemetry Collector's events apart.
 
 ## Tear down
 

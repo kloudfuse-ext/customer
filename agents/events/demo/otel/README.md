@@ -1,11 +1,13 @@
 # Events Demo — OpenTelemetry Collector
 
-Deploys the **OTel Collector Contrib** as a single-replica **Deployment** (not DaemonSet) to collect
+Deploys the **OTel Collector Contrib** as a single-replica **Deployment** to collect
 Kubernetes Events via the `k8s_events` receiver and forward them to Kloudfuse.
 
-> **Important:** The Collector must be deployed as a Deployment, not a DaemonSet.
-> Running as a DaemonSet causes duplicate events due to upstream
-> [issue #42266](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/42266).
+> **Note:** This example collects events only, and runs one replica so each event is sent once.
+> To collect logs, metrics, events and Kubernetes objects from one install, use
+> [`agents/kubernetes/otel`](../../../kubernetes/otel/). It runs the Collector as a DaemonSet and
+> uses leader election, which the `k8s_events` receiver supports from Collector 0.137.0, so events
+> are still sent once.
 
 ## How it works
 
@@ -39,22 +41,18 @@ helm upgrade --install otel-events open-telemetry/opentelemetry-collector \
 
 ## Verify events in Kloudfuse
 
-OTel Kubernetes events are stored in the **Logs store** (not the Events store), tagged with `kf_events_agent=otlp`.
-Query via the Loki API:
+OTel Kubernetes events appear in the **Events** view, with source `kubernetes` and the label
+`kf_events_agent=otlp`. Filter the Events view by:
 
-```logql
-{kf_events_agent="otlp"}
+```
+kf_events_agent = otlp
 ```
 
-Filter to a specific namespace:
+Add `kube_namespace = $NAMESPACE` to see one namespace. Events emitted by the `events-demo` pod
+appear with the event reason and message.
 
-```logql
-{kf_events_agent="otlp", k8s_namespace_name="$NAMESPACE"}
-```
-
-Events emitted by the `events-demo` pod will appear as log records with the event reason and message in the log body.
-
-> **Note:** These events appear in *Logs*, not in the *Events* explorer. This is different from the Datadog Agent path — see [`../dd-agent/`](../dd-agent/).
+> **Note:** Checked on Kloudfuse 4.3. Events from the Datadog Agent path appear in the same view —
+> see [`../dd-agent/`](../dd-agent/).
 
 ## Tear down
 
