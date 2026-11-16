@@ -14,6 +14,10 @@ The Collector runs as a DaemonSet, one pod per node.
 | Node | Container logs, kubelet node/pod/container/volume metrics, host metrics, OTLP traces/metrics/logs from your apps | Every pod |
 | Cluster | `k8s_cluster` metrics, Kubernetes events, Kubernetes objects | One pod at a time, chosen by leader election |
 
+Kubernetes objects include ConfigMaps, which are sent in full. If some of yours hold secrets, limit or remove the `configmaps` entry as the comment in the file describes.
+
+Optional, commented out in the file: scraping Prometheus metrics from pods annotated `prometheus.io/scrape: "true"`.
+
 Records carry:
 
 - **Cluster name** (`k8s.cluster.name`, shown in Kloudfuse as `kube_cluster_name`), when it is detected or set.

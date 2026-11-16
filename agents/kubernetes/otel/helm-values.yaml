@@ -116,16 +116,15 @@ ports:
   zipkin:
     enabled: false
 
-# Read access for the receivers below. nodes/proxy is needed by kubelet_stats:
-# it reads the pod list from each node's kubelet, and the kubelet only serves
-# that to callers with this permission.
+# Read access for the receivers below. nodes/proxy, which opens every kubelet
+# endpoint, is deliberately not granted: kubelet_stats needs only nodes/stats.
 clusterRole:
   create: true
   rules:
     - apiGroups: [""]
-      resources: [events, namespaces, namespaces/status, nodes, nodes/spec, nodes/stats, nodes/proxy,
+      resources: [events, namespaces, namespaces/status, nodes, nodes/spec, nodes/stats,
                   pods, pods/status, services, endpoints, persistentvolumeclaims, persistentvolumes,
-                  serviceaccounts, replicationcontrollers, replicationcontrollers/status,
+                  serviceaccounts, configmaps, replicationcontrollers, replicationcontrollers/status,
                   resourcequotas]
       verbs: [get, list, watch]
     - apiGroups: [apps]
@@ -228,7 +227,6 @@ config:
       k8s_api_config:
         auth_type: serviceAccount
       metric_groups: [node, pod, container, volume]
-      extra_metadata_labels: [k8s.volume.type]
       collect_all_network_interfaces:
         pod: true
         node: true
@@ -261,6 +259,40 @@ config:
           metrics:
             system.filesystem.utilization:
               enabled: true
+
+    # Optional: scrape Prometheus metrics from pods that carry the annotation
+    # prometheus.io/scrape: "true" (and optionally prometheus.io/port and
+    # prometheus.io/path). Each Collector scrapes only the pods on its own
+    # node, so nothing is scraped twice. To turn it on, uncomment this block,
+    # remove the line `prometheus: null` above, and add prometheus to the
+    # receivers of the `metrics` pipeline at the end of this file.
+    # prometheus:
+    #   config:
+    #     scrape_configs:
+    #       - job_name: kubernetes-pods
+    #         scrape_interval: 30s
+    #         kubernetes_sd_configs:
+    #           - role: pod
+    #             selectors:
+    #               - role: pod
+    #                 field: spec.nodeName=${env:K8S_NODE_NAME}
+    #         relabel_configs:
+    #           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    #             action: keep
+    #             regex: "true"
+    #           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+    #             action: replace
+    #             target_label: __metrics_path__
+    #             regex: (.+)
+    #           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+    #             action: replace
+    #             regex: ([^:]+)(?::\d+)?;(\d+)
+    #             replacement: $$1:$$2
+    #             target_label: __address__
+    #           - source_labels: [__meta_kubernetes_namespace]
+    #             target_label: k8s_namespace_name
+    #           - source_labels: [__meta_kubernetes_pod_name]
+    #             target_label: k8s_pod_name
 
     # --- Per cluster (leader only) ----------------------------------------
     # Deployment, StatefulSet, pod phase and node condition metrics.
@@ -319,10 +351,10 @@ config:
           group: gateway.networking.k8s.io
         - name: httproutes
           group: gateway.networking.k8s.io
-        # ConfigMaps are sent in full, including their data. Add them only if
-        # none hold secrets, or limit them with namespaces: / label_selector:.
-        # Then also add configmaps to the first clusterRole rule above.
-        # - name: configmaps
+        # ConfigMaps are sent in full, including their data. If some of yours
+        # hold secrets, limit this with namespaces: / label_selector:, or remove
+        # it together with configmaps in the first clusterRole rule above.
+        - name: configmaps
 
   processors:
     memory_limiter:
@@ -463,7 +495,7 @@ config:
         processors: [memory_limiter, k8s_attributes, resource_detection, transform/gcp_project, batch]
         exporters: [otlp_http]
       metrics:
-        receivers: [otlp, kubelet_stats, hostmetrics]
+        receivers: [otlp, kubelet_stats, hostmetrics]   # add prometheus here if you turned it on
         processors: [memory_limiter, k8s_attributes, resource_detection, transform/gcp_project, resource/kf_metrics_agent, batch]
         exporters: [otlp_http]
       # --- Per cluster: node identity removed --------------------------------
