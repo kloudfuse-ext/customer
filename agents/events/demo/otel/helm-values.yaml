@@ -1,10 +1,11 @@
 # OTel Collector — Kubernetes Events → Kloudfuse
 #
-# Deploys the OTel Collector Contrib as a *Deployment* (not DaemonSet) to collect
+# Deploys the OTel Collector Contrib as a single-replica Deployment to collect
 # Kubernetes events via the k8s_events receiver and forward them to Kloudfuse.
 #
-# IMPORTANT: Must be deployed as a Deployment, not a DaemonSet.
-#            DaemonSet mode causes duplicate events — upstream issue #42266.
+# One replica, so each event is sent once. To run it in a DaemonSet with logs,
+# metrics and Kubernetes objects, see agents/kubernetes/otel, which uses the
+# receiver's leader election (Collector 0.137.0 or later).
 #
 # Prerequisites:
 #   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
@@ -23,7 +24,7 @@
 image:
   repository: "otel/opentelemetry-collector-contrib"
 
-# Deploy as a single Deployment to avoid duplicate event collection
+# One replica, so each event is collected once
 mode: deployment
 replicaCount: 1
 

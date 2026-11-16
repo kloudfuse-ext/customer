@@ -1,0 +1,518 @@
+# OpenTelemetry Collector for Kubernetes -> Kloudfuse
+#
+# Values for the upstream open-telemetry/opentelemetry-collector Helm chart.
+# One install per Kubernetes cluster. It runs the Collector as a DaemonSet
+# (one pod per node) and sends everything to Kloudfuse over OTLP HTTP:
+#
+#   Per node (every pod)          - container logs, node and pod metrics
+#                                   (kubelet), host metrics, and OTLP
+#                                   traces/metrics/logs from your apps
+#   Per cluster (one pod at a     - cluster metrics (k8s_cluster), Kubernetes
+#   time, chosen by leader          events, and Kubernetes objects for the
+#   election)                       Infrastructure view
+#
+# Records get the cluster name when it is detected or set, and the cloud
+# account where a cloud is detected (not on-premises); GKE data also gets the
+# GCP project. Cluster-level data does not carry the name of the node the
+# Collector happened to run on.
+#
+# Not for EKS clusters that run only on Fargate: Fargate does not run DaemonSets.
+#
+# Requirements: chart 0.162.0 or later, Collector Contrib 0.153.0 or later
+# (this file uses the current component names, such as resource_detection and
+# otlp_http). Checked against chart 0.178.3 with Collector Contrib 0.163.2.
+#
+# ---------------------------------------------------------------------------
+# CHANGE THESE (all in `extraEnvs` below):
+#   1. KLOUDFUSE_ENDPOINT  - https://<your Kloudfuse hostname>
+#   2. KLOUDFUSE_API_KEY   - read from a Secret; skip if ingestion auth is off.
+#      These commands can be run again to change the key:
+#        kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -
+#        kubectl -n otel create secret generic kloudfuse-api-key \
+#          --from-literal=api-key='<your Kloudfuse API key>' \
+#          --dry-run=client -o yaml | kubectl apply -f -
+#      After changing the key, restart the Collector pods:
+#        kubectl -n otel rollout restart daemonset -l app.kubernetes.io/instance=kloudfuse-otel
+#   3. Cluster name        - detected on GKE; on EKS and AKS when the cloud
+#                            permissions below are in place. Anywhere else
+#                            (on-premises, kind), or to choose your
+#                            own name, uncomment OTEL_RESOURCE_ATTRIBUTES.
+#
+# Install:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#   helm upgrade --install kloudfuse-otel open-telemetry/opentelemetry-collector \
+#     --version 0.178.3 -n otel --create-namespace -f helm-values.yaml
+#
+# --version pins the chart this file was tested with. A later chart may rename
+# settings; check this file against it before you move the pin.
+# ---------------------------------------------------------------------------
+
+mode: daemonset
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+extraEnvs:
+  # 1. Your Kloudfuse URL, without a trailing slash.
+  - name: KLOUDFUSE_ENDPOINT
+    value: "https://<kloudfuse-hostname>"
+  # 2. Your Kloudfuse API key. optional: true lets the Collector start without
+  #    the Secret when ingestion authentication is not enabled. If your
+  #    Kloudfuse requires a key and the Secret is missing, the pods still start
+  #    and Kloudfuse rejects what they send: check the Collector's log.
+  - name: KLOUDFUSE_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: kloudfuse-api-key
+        key: api-key
+        optional: true
+  # 3. Cluster name, when it is not detected or you want your own name.
+  #    Values set here win over detected ones.
+  # - name: OTEL_RESOURCE_ATTRIBUTES
+  #   value: "k8s.cluster.name=<cluster-name>"
+
+# Chart presets: these add the volumes, environment variables and permissions
+# each feature needs.
+presets:
+  # Adds pod, namespace and workload names to this node's data.
+  kubernetesAttributes:
+    enabled: true
+  # Tails container log files on each node.
+  logsCollection:
+    enabled: true
+    includeCollectorLogs: false
+  # Mounts the node's root filesystem so host metrics describe the node.
+  hostMetrics:
+    enabled: true
+
+# A DaemonSet pod is not scheduled on a tainted node unless it tolerates the
+# taint. To collect from every node, including tainted ones, uncomment:
+# tolerations:
+#   - operator: Exists
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi   # memory_limiter below keeps the Collector under 80% of this
+
+# Apps send OTLP to this Service (port 4317 gRPC, 4318 HTTP) or to their
+# node's IP on the same ports. In daemonset mode the chart sets the Service to
+# internalTrafficPolicy: Local, so data reaches the Collector on the app's own
+# node and gets that node's attributes.
+service:
+  enabled: true
+
+ports:
+  otlp:
+    enabled: true
+  otlp-http:
+    enabled: true
+  metrics:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+
+# Read access for the receivers below. nodes/proxy, which opens every kubelet
+# endpoint, is deliberately not granted: kubelet_stats needs only nodes/stats.
+clusterRole:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: [events, namespaces, namespaces/status, nodes, nodes/spec, nodes/stats,
+                  pods, pods/status, services, endpoints, persistentvolumeclaims, persistentvolumes,
+                  serviceaccounts, configmaps, replicationcontrollers, replicationcontrollers/status,
+                  resourcequotas]
+      verbs: [get, list, watch]
+    - apiGroups: [apps]
+      resources: [daemonsets, deployments, replicasets, statefulsets]
+      verbs: [get, list, watch]
+    - apiGroups: [batch]
+      resources: [jobs, cronjobs]
+      verbs: [get, list, watch]
+    - apiGroups: [autoscaling]
+      resources: [horizontalpodautoscalers]
+      verbs: [get, list, watch]
+    - apiGroups: [events.k8s.io]
+      resources: [events]
+      verbs: [get, list, watch]
+    - apiGroups: [rbac.authorization.k8s.io]
+      resources: [clusterroles, clusterrolebindings, roles, rolebindings]
+      verbs: [get, list, watch]
+    - apiGroups: [networking.k8s.io]
+      resources: [ingresses, ingressclasses]
+      verbs: [get, list, watch]
+    - apiGroups: [storage.k8s.io]
+      resources: [storageclasses]
+      verbs: [get, list, watch]
+    - apiGroups: [gateway.networking.k8s.io]
+      resources: [gatewayclasses, gateways, httproutes]
+      verbs: [get, list, watch]
+
+# Leader election keeps its leases in the Collector's own namespace, so the
+# permission to write them is granted there only, not cluster-wide.
+extraManifests:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: '{{ include "opentelemetry-collector.fullname" . }}-leases'
+      namespace: '{{ .Release.Namespace }}'
+    rules:
+      - apiGroups: [coordination.k8s.io]
+        resources: [leases]
+        verbs: [get, list, watch, create, update, patch, delete]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: '{{ include "opentelemetry-collector.fullname" . }}-leases'
+      namespace: '{{ .Release.Namespace }}'
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: '{{ include "opentelemetry-collector.fullname" . }}-leases'
+    subjects:
+      - kind: ServiceAccount
+        name: '{{ include "opentelemetry-collector.serviceAccountName" . }}'
+        namespace: '{{ .Release.Namespace }}'
+
+config:
+  extensions:
+    health_check:
+      endpoint: ${env:MY_POD_IP}:13133
+    # One lease per cluster-level receiver: only the pod holding the lease
+    # runs that receiver, so cluster data is sent once, not once per node.
+    k8s_leader_elector/k8s_cluster:
+      auth_type: serviceAccount
+      lease_name: kloudfuse-otel-k8s-cluster
+      lease_namespace: ${env:OTEL_K8S_NAMESPACE}
+    k8s_leader_elector/k8s_events:
+      auth_type: serviceAccount
+      lease_name: kloudfuse-otel-k8s-events
+      lease_namespace: ${env:OTEL_K8S_NAMESPACE}
+    k8s_leader_elector/k8s_objects:
+      auth_type: serviceAccount
+      lease_name: kloudfuse-otel-k8s-objects
+      lease_namespace: ${env:OTEL_K8S_NAMESPACE}
+
+  receivers:
+    # Remove receivers from the chart's defaults that this setup does not use.
+    jaeger: null
+    zipkin: null
+    prometheus: null
+
+    # OTLP from your instrumented apps.
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:4317
+        http:
+          endpoint: ${env:MY_POD_IP}:4318
+
+    # --- Per node ---------------------------------------------------------
+    # Node, pod, container and volume metrics from this node's kubelet.
+    kubelet_stats:
+      collection_interval: 30s
+      auth_type: serviceAccount
+      endpoint: https://${env:K8S_NODE_IP}:10250
+      # The kubelet's certificate is not checked: on many clusters it is not
+      # signed for the node's IP address. The Collector talks only to the
+      # kubelet of its own node.
+      insecure_skip_verify: true
+      node: ${env:K8S_NODE_NAME}
+      # Lets the receiver read this node's capacity from the Kubernetes API,
+      # which the *.node.utilization metrics below are calculated from.
+      k8s_api_config:
+        auth_type: serviceAccount
+      metric_groups: [node, pod, container, volume]
+      collect_all_network_interfaces:
+        pod: true
+        node: true
+      metrics:
+        # Usage as a share of the node's capacity. Deprecated upstream in
+        # Collector 0.162.0; kept because current Kloudfuse views use them.
+        k8s.container.cpu.node.utilization:
+          enabled: true
+        k8s.pod.cpu.node.utilization:
+          enabled: true
+        k8s.container.memory.node.utilization:
+          enabled: true
+        k8s.pod.memory.node.utilization:
+          enabled: true
+
+    # Node CPU, memory, disk and filesystem. The hostMetrics preset defines
+    # this receiver under its older name, hostmetrics; these settings merge in.
+    hostmetrics:
+      collection_interval: 30s
+      scrapers:
+        cpu:
+          metrics:
+            system.cpu.utilization:
+              enabled: true
+        memory:
+          metrics:
+            system.memory.utilization:
+              enabled: true
+        filesystem:
+          metrics:
+            system.filesystem.utilization:
+              enabled: true
+
+    # Optional: scrape Prometheus metrics from pods that carry the annotation
+    # prometheus.io/scrape: "true" (and optionally prometheus.io/port and
+    # prometheus.io/path). Each Collector scrapes only the pods on its own
+    # node, so nothing is scraped twice. To turn it on, uncomment this block,
+    # remove the line `prometheus: null` above, and add prometheus to the
+    # receivers of the `metrics` pipeline at the end of this file.
+    # prometheus:
+    #   config:
+    #     scrape_configs:
+    #       - job_name: kubernetes-pods
+    #         scrape_interval: 30s
+    #         kubernetes_sd_configs:
+    #           - role: pod
+    #             selectors:
+    #               - role: pod
+    #                 field: spec.nodeName=${env:K8S_NODE_NAME}
+    #         relabel_configs:
+    #           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    #             action: keep
+    #             regex: "true"
+    #           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+    #             action: replace
+    #             target_label: __metrics_path__
+    #             regex: (.+)
+    #           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+    #             action: replace
+    #             regex: ([^:]+)(?::\d+)?;(\d+)
+    #             replacement: $$1:$$2
+    #             target_label: __address__
+    #           - source_labels: [__meta_kubernetes_namespace]
+    #             target_label: k8s_namespace_name
+    #           - source_labels: [__meta_kubernetes_pod_name]
+    #             target_label: k8s_pod_name
+
+    # --- Per cluster (leader only) ----------------------------------------
+    # Deployment, StatefulSet, pod phase and node condition metrics.
+    k8s_cluster:
+      k8s_leader_elector: k8s_leader_elector/k8s_cluster
+      auth_type: serviceAccount
+      collection_interval: 30s
+      allocatable_types_to_report: [cpu, memory, pods]
+      node_conditions_to_report: [Ready, MemoryPressure]
+      metrics:
+        k8s.node.condition:
+          enabled: true
+      resource_attributes:
+        container.id:
+          enabled: false
+        k8s.container.status.last_terminated_reason:
+          enabled: true
+
+    # Kubernetes events.
+    k8s_events:
+      k8s_leader_elector: k8s_leader_elector/k8s_events
+      auth_type: serviceAccount
+
+    # Kubernetes objects for Kloudfuse Infrastructure > Kubernetes.
+    # Kloudfuse drops objects not refreshed within 15 minutes, so every kind
+    # is pulled every 5 minutes.
+    k8s_objects:
+      k8s_leader_elector: k8s_leader_elector/k8s_objects
+      auth_type: serviceAccount
+      error_mode: ignore   # skip kinds this cluster does not have (e.g. Gateway API)
+      interval: 5m
+      objects:
+        - name: pods
+        - name: nodes
+        - name: namespaces
+        - name: services
+        - name: serviceaccounts
+        - name: persistentvolumes
+        - name: persistentvolumeclaims
+        - name: deployments
+        - name: replicasets
+        - name: daemonsets
+        - name: statefulsets
+        - name: jobs
+        - name: cronjobs
+        - name: roles
+        - name: rolebindings
+        - name: clusterroles
+        - name: clusterrolebindings
+        - name: ingresses
+        - name: ingressclasses
+        - name: storageclasses
+        - name: gatewayclasses
+          group: gateway.networking.k8s.io
+        - name: gateways
+          group: gateway.networking.k8s.io
+        - name: httproutes
+          group: gateway.networking.k8s.io
+        # ConfigMaps are sent in full, including their data. If some of yours
+        # hold secrets, limit this with namespaces: / label_selector:, or remove
+        # it together with configmaps in the first clusterRole rule above.
+        - name: configmaps
+
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+    batch:
+      timeout: 10s
+
+    # Cluster name and cloud attributes from the cloud's metadata service.
+    # Detectors for other clouds find nothing and add nothing, so one file
+    # works on GKE, EKS, AKS and elsewhere. `env` is first, so a value in
+    # OTEL_RESOURCE_ATTRIBUTES wins.
+    #   GKE: automatic.
+    #   EKS: needs ec2:DescribeInstances for the node or Collector IAM role,
+    #        and pod access to instance metadata (IMDSv2 hop limit 2 or more).
+    #   AKS: the name comes from the node resource group (MC_<rg>_<cluster>_<region>);
+    #        it is wrong if the cluster name has underscores or the node
+    #        resource group has a custom name. Set OTEL_RESOURCE_ATTRIBUTES then.
+    resource_detection:
+      detectors: [env, eks, ec2, gcp, aks, azure]
+      override: false
+      timeout: 5s
+      eks:
+        resource_attributes:
+          k8s.cluster.name:
+            enabled: true
+      aks:
+        resource_attributes:
+          k8s.cluster.name:
+            enabled: true
+
+    # cloud.account.id is the AWS account, GCP project or Azure subscription.
+    # Only GCP has projects, so `project` is set on GCP only.
+    transform/gcp_project:
+      error_mode: ignore
+      metric_statements:
+        - context: resource
+          statements:
+            - set(resource.attributes["project"], resource.attributes["cloud.account.id"]) where resource.attributes["cloud.provider"] == "gcp"
+      log_statements:
+        - context: resource
+          statements:
+            - set(resource.attributes["project"], resource.attributes["cloud.account.id"]) where resource.attributes["cloud.provider"] == "gcp"
+      trace_statements:
+        - context: resource
+          statements:
+            - set(resource.attributes["project"], resource.attributes["cloud.account.id"]) where resource.attributes["cloud.provider"] == "gcp"
+
+    # Cluster-level data runs on whichever node holds the lease. Remove that
+    # node's identity so it is not reported as the source of the data.
+    resource/drop_node_identity:
+      attributes:
+        - pattern: ^host\.
+          action: delete
+        - pattern: ^azure\.vm\.
+          action: delete
+        - key: cloud.availability_zone
+          action: delete
+
+    # Pod and workload names for this node's data.
+    k8s_attributes:
+      extract:
+        metadata:
+          - k8s.namespace.name
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.pod.start_time
+          - k8s.node.name
+          - k8s.deployment.name
+          - k8s.replicaset.name
+          - k8s.statefulset.name
+          - k8s.daemonset.name
+          - k8s.job.name
+          - k8s.cronjob.name
+
+    # Tags that tell Kloudfuse the data came from the OTel Collector.
+    resource/kf_metrics_agent:
+      attributes:
+        - key: kf_metrics_agent
+          value: otlp
+          action: upsert
+    resource/kf_events_agent:
+      attributes:
+        - key: kf_events_agent
+          value: otlp
+          action: upsert
+    resource/kf_infra_agent:
+      attributes:
+        - key: kf_infra_agent
+          value: otlp
+          action: upsert
+
+    # Turns the numeric k8s.pod.phase value into a readable `phase` label.
+    transform/k8s_pod_phase:
+      metric_statements:
+        - context: datapoint
+          statements:
+            - set(datapoint.attributes["phase"], "Pending")   where metric.name == "k8s.pod.phase" and datapoint.value_int == 1
+            - set(datapoint.attributes["phase"], "Running")   where metric.name == "k8s.pod.phase" and datapoint.value_int == 2
+            - set(datapoint.attributes["phase"], "Succeeded") where metric.name == "k8s.pod.phase" and datapoint.value_int == 3
+            - set(datapoint.attributes["phase"], "Failed")    where metric.name == "k8s.pod.phase" and datapoint.value_int == 4
+            - set(datapoint.attributes["phase"], "Unknown")   where metric.name == "k8s.pod.phase" and datapoint.value_int == 5
+
+  exporters:
+    debug: null
+    # Logs, metrics and traces.
+    otlp_http:
+      logs_endpoint: ${env:KLOUDFUSE_ENDPOINT}/ingester/otlp/v1/logs
+      metrics_endpoint: ${env:KLOUDFUSE_ENDPOINT}/ingester/otlp/metrics
+      traces_endpoint: ${env:KLOUDFUSE_ENDPOINT}/ingester/otlp/traces
+      headers:
+        Kf-Api-Key: ${env:KLOUDFUSE_API_KEY}
+    # Kubernetes events and objects each have their own Kloudfuse endpoint.
+    otlp_http/k8s_events:
+      logs_endpoint: ${env:KLOUDFUSE_ENDPOINT}/ingester/otlp/k8s_events
+      headers:
+        Kf-Api-Key: ${env:KLOUDFUSE_API_KEY}
+    otlp_http/k8s_objects:
+      logs_endpoint: ${env:KLOUDFUSE_ENDPOINT}/ingester/otlp/k8s_objects
+      headers:
+        Kf-Api-Key: ${env:KLOUDFUSE_API_KEY}
+
+  service:
+    extensions:
+      - health_check
+      - k8s_leader_elector/k8s_cluster
+      - k8s_leader_elector/k8s_events
+      - k8s_leader_elector/k8s_objects
+    pipelines:
+      # --- Per node: keeps this node's host attributes ----------------------
+      logs:
+        receivers: [otlp, file_log]
+        processors: [memory_limiter, k8s_attributes, resource_detection, transform/gcp_project, batch]
+        exporters: [otlp_http]
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8s_attributes, resource_detection, transform/gcp_project, batch]
+        exporters: [otlp_http]
+      metrics:
+        receivers: [otlp, kubelet_stats, hostmetrics]   # add prometheus here if you turned it on
+        processors: [memory_limiter, k8s_attributes, resource_detection, transform/gcp_project, resource/kf_metrics_agent, batch]
+        exporters: [otlp_http]
+      # --- Per cluster: node identity removed --------------------------------
+      metrics/cluster:
+        receivers: [k8s_cluster]
+        processors: [memory_limiter, resource_detection, resource/drop_node_identity, transform/gcp_project, resource/kf_metrics_agent, transform/k8s_pod_phase, batch]
+        exporters: [otlp_http]
+      logs/k8s_events:
+        receivers: [k8s_events]
+        processors: [memory_limiter, resource_detection, resource/drop_node_identity, transform/gcp_project, resource/kf_events_agent, batch]
+        exporters: [otlp_http/k8s_events]
+      logs/k8s_objects:
+        receivers: [k8s_objects]
+        processors: [memory_limiter, resource_detection, resource/drop_node_identity, transform/gcp_project, resource/kf_infra_agent, batch]
+        exporters: [otlp_http/k8s_objects]
