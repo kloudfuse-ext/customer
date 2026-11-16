@@ -14,10 +14,10 @@ The Collector runs as a DaemonSet, one pod per node.
 | Node | Container logs, kubelet node/pod/container/volume metrics, host metrics, OTLP traces/metrics/logs from your apps | Every pod |
 | Cluster | `k8s_cluster` metrics, Kubernetes events, Kubernetes objects | One pod at a time, chosen by leader election |
 
-Every record carries:
+Records carry:
 
-- **Cluster name** (`k8s.cluster.name`, shown in Kloudfuse as `kube_cluster_name`).
-- **Cloud account** (`cloud.account.id`, shown as `cloud_account_id`): the AWS account, GCP project or Azure subscription.
+- **Cluster name** (`k8s.cluster.name`, shown in Kloudfuse as `kube_cluster_name`), when it is detected or set.
+- **Cloud account** (`cloud.account.id`, shown as `cloud_account_id`): the AWS account, GCP project or Azure subscription. Not set on-premises.
 - **GCP project** (`project`), on GKE only. Other clouds have no projects, so `project` is not set there.
 
 Cluster-level data has the node's host attributes removed, so deployments, events and objects are not reported as coming from the node that holds the lease.
@@ -28,6 +28,7 @@ Cluster-level data has the node's host attributes removed, so deployments, event
 - Chart 0.162.0 or later; Collector Contrib 0.153.0 or later.
 - The external hostname of your Kloudfuse cluster.
 - An API key, if ingestion authentication is enabled.
+- Nodes that run DaemonSets. EKS clusters that run only on Fargate are not supported.
 - **EKS only:** `ec2:DescribeInstances` on the node or Collector IAM role, and pod access to instance metadata (IMDSv2 hop limit 2 or more). Otherwise set the cluster name yourself.
 
 ## Deploy
@@ -36,9 +37,16 @@ Cluster-level data has the node's host attributes removed, so deployments, event
 2. Store the API key (skip if ingestion authentication is off):
 
    ```bash
-   kubectl create namespace otel
+   kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n otel create secret generic kloudfuse-api-key \
-     --from-literal=api-key=<your Kloudfuse API key>
+     --from-literal=api-key=<your Kloudfuse API key> \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
+   These commands can be run again to change the key. Then restart the Collector pods:
+
+   ```bash
+   kubectl -n otel rollout restart daemonset -l app.kubernetes.io/instance=kloudfuse-otel
    ```
 
 3. Install:
@@ -51,6 +59,8 @@ Cluster-level data has the node's host attributes removed, so deployments, event
    ```
 
 ## Verify
+
+If no pods appear and every node is tainted, uncomment the `tolerations` block in `helm-values.yaml` and install again.
 
 - `kubectl -n otel get pods -l app.kubernetes.io/instance=kloudfuse-otel` shows one pod per node.
 - In Kloudfuse, filter metrics by `kube_cluster_name="<cluster-name>"` and `kf_metrics_agent="otlp"`.

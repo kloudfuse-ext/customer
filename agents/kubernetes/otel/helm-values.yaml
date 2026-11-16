@@ -11,9 +11,12 @@
 #   time, chosen by leader          events, and Kubernetes objects for the
 #   election)                       Infrastructure view
 #
-# Every record gets the cluster name and the cloud account; GKE data also gets
-# the GCP project. Cluster-level data does not carry the name of the node the
+# Records get the cluster name when it is detected or set, and the cloud
+# account where a cloud is detected (not on-premises); GKE data also gets the
+# GCP project. Cluster-level data does not carry the name of the node the
 # Collector happened to run on.
+#
+# Not for EKS clusters that run only on Fargate: Fargate does not run DaemonSets.
 #
 # Requirements: chart 0.162.0 or later, Collector Contrib 0.153.0 or later
 # (this file uses the current component names, such as resource_detection and
@@ -22,13 +25,17 @@
 # ---------------------------------------------------------------------------
 # CHANGE THESE (all in `extraEnvs` below):
 #   1. KLOUDFUSE_ENDPOINT  - https://<your Kloudfuse hostname>
-#   2. KLOUDFUSE_API_KEY   - read from a Secret; skip if ingestion auth is off:
-#        kubectl create namespace otel
+#   2. KLOUDFUSE_API_KEY   - read from a Secret; skip if ingestion auth is off.
+#      These commands can be run again to change the key:
+#        kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -
 #        kubectl -n otel create secret generic kloudfuse-api-key \
-#          --from-literal=api-key=<your Kloudfuse API key>
+#          --from-literal=api-key=<your Kloudfuse API key> \
+#          --dry-run=client -o yaml | kubectl apply -f -
+#      After changing the key, restart the Collector pods:
+#        kubectl -n otel rollout restart daemonset -l app.kubernetes.io/instance=kloudfuse-otel
 #   3. Cluster name        - detected on GKE; on EKS and AKS when the cloud
 #                            permissions below are in place. Anywhere else
-#                            (on-prem, kind, EKS Fargate), or to choose your
+#                            (on-premises, kind), or to choose your
 #                            own name, uncomment OTEL_RESOURCE_ATTRIBUTES.
 #
 # Install:
@@ -74,6 +81,11 @@ presets:
   hostMetrics:
     enabled: true
 
+# A DaemonSet pod is not scheduled on a tainted node unless it tolerates the
+# taint. To collect from every node, including tainted ones, uncomment:
+# tolerations:
+#   - operator: Exists
+
 resources:
   requests:
     cpu: 100m
@@ -104,14 +116,16 @@ ports:
   zipkin:
     enabled: false
 
-# Read access for the receivers below, plus leases for leader election.
+# Read access for the receivers below. nodes/proxy is needed by kubelet_stats:
+# it reads the pod list from each node's kubelet, and the kubelet only serves
+# that to callers with this permission.
 clusterRole:
   create: true
   rules:
     - apiGroups: [""]
       resources: [events, namespaces, namespaces/status, nodes, nodes/spec, nodes/stats, nodes/proxy,
                   pods, pods/status, services, endpoints, persistentvolumeclaims, persistentvolumes,
-                  serviceaccounts, configmaps, replicationcontrollers, replicationcontrollers/status,
+                  serviceaccounts, replicationcontrollers, replicationcontrollers/status,
                   resourcequotas]
       verbs: [get, list, watch]
     - apiGroups: [apps]
@@ -138,9 +152,32 @@ clusterRole:
     - apiGroups: [gateway.networking.k8s.io]
       resources: [gatewayclasses, gateways, httproutes]
       verbs: [get, list, watch]
-    - apiGroups: [coordination.k8s.io]
-      resources: [leases]
-      verbs: [get, list, watch, create, update, patch, delete]
+
+# Leader election keeps its leases in the Collector's own namespace, so the
+# permission to write them is granted there only, not cluster-wide.
+extraManifests:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: '{{ include "opentelemetry-collector.fullname" . }}-leases'
+      namespace: '{{ .Release.Namespace }}'
+    rules:
+      - apiGroups: [coordination.k8s.io]
+        resources: [leases]
+        verbs: [get, list, watch, create, update, patch, delete]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: '{{ include "opentelemetry-collector.fullname" . }}-leases'
+      namespace: '{{ .Release.Namespace }}'
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: '{{ include "opentelemetry-collector.fullname" . }}-leases'
+    subjects:
+      - kind: ServiceAccount
+        name: '{{ include "opentelemetry-collector.serviceAccountName" . }}'
+        namespace: '{{ .Release.Namespace }}'
 
 config:
   extensions:
@@ -180,9 +217,16 @@ config:
     kubelet_stats:
       collection_interval: 30s
       auth_type: serviceAccount
-      endpoint: ${env:K8S_NODE_IP}:10250
+      endpoint: https://${env:K8S_NODE_IP}:10250
+      # The kubelet's certificate is not checked: on many clusters it is not
+      # signed for the node's IP address. The Collector talks only to the
+      # kubelet of its own node.
       insecure_skip_verify: true
       node: ${env:K8S_NODE_NAME}
+      # Lets the receiver read this node's capacity from the Kubernetes API,
+      # which the *.node.utilization metrics below are calculated from.
+      k8s_api_config:
+        auth_type: serviceAccount
       metric_groups: [node, pod, container, volume]
       extra_metadata_labels: [k8s.volume.type]
       collect_all_network_interfaces:
@@ -277,6 +321,7 @@ config:
           group: gateway.networking.k8s.io
         # ConfigMaps are sent in full, including their data. Add them only if
         # none hold secrets, or limit them with namespaces: / label_selector:.
+        # Then also add configmaps to the first clusterRole rule above.
         # - name: configmaps
 
   processors:
@@ -317,15 +362,15 @@ config:
       metric_statements:
         - context: resource
           statements:
-            - set(attributes["project"], attributes["cloud.account.id"]) where attributes["cloud.provider"] == "gcp"
+            - set(resource.attributes["project"], resource.attributes["cloud.account.id"]) where resource.attributes["cloud.provider"] == "gcp"
       log_statements:
         - context: resource
           statements:
-            - set(attributes["project"], attributes["cloud.account.id"]) where attributes["cloud.provider"] == "gcp"
+            - set(resource.attributes["project"], resource.attributes["cloud.account.id"]) where resource.attributes["cloud.provider"] == "gcp"
       trace_statements:
         - context: resource
           statements:
-            - set(attributes["project"], attributes["cloud.account.id"]) where attributes["cloud.provider"] == "gcp"
+            - set(resource.attributes["project"], resource.attributes["cloud.account.id"]) where resource.attributes["cloud.provider"] == "gcp"
 
     # Cluster-level data runs on whichever node holds the lease. Remove that
     # node's identity so it is not reported as the source of the data.
@@ -376,11 +421,11 @@ config:
       metric_statements:
         - context: datapoint
           statements:
-            - set(attributes["phase"], "Pending")   where metric.name == "k8s.pod.phase" and value_int == 1
-            - set(attributes["phase"], "Running")   where metric.name == "k8s.pod.phase" and value_int == 2
-            - set(attributes["phase"], "Succeeded") where metric.name == "k8s.pod.phase" and value_int == 3
-            - set(attributes["phase"], "Failed")    where metric.name == "k8s.pod.phase" and value_int == 4
-            - set(attributes["phase"], "Unknown")   where metric.name == "k8s.pod.phase" and value_int == 5
+            - set(datapoint.attributes["phase"], "Pending")   where metric.name == "k8s.pod.phase" and datapoint.value_int == 1
+            - set(datapoint.attributes["phase"], "Running")   where metric.name == "k8s.pod.phase" and datapoint.value_int == 2
+            - set(datapoint.attributes["phase"], "Succeeded") where metric.name == "k8s.pod.phase" and datapoint.value_int == 3
+            - set(datapoint.attributes["phase"], "Failed")    where metric.name == "k8s.pod.phase" and datapoint.value_int == 4
+            - set(datapoint.attributes["phase"], "Unknown")   where metric.name == "k8s.pod.phase" and datapoint.value_int == 5
 
   exporters:
     debug: null
