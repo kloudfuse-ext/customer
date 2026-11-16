@@ -37,7 +37,7 @@ Cluster-level data has the node's host attributes removed, so deployments, event
 
 ## Deploy
 
-1. Edit `helm-values.yaml`: set `KLOUDFUSE_ENDPOINT`, and, if the cluster name is not detected (anything but GKE, EKS or AKS), uncomment `OTEL_RESOURCE_ATTRIBUTES`.
+1. Edit `helm-values.yaml`: set `KLOUDFUSE_ENDPOINT`, and uncomment `OTEL_RESOURCE_ATTRIBUTES` to set the cluster name wherever it is not detected correctly: anywhere other than GKE, EKS and AKS; on EKS without the permissions listed above; and on AKS when the cluster name contains an underscore or the node resource group has a custom name.
 2. Store the API key (skip if ingestion authentication is off):
 
    ```bash
