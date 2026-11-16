@@ -43,7 +43,7 @@ Cluster-level data has the node's host attributes removed, so deployments, event
    ```bash
    kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n otel create secret generic kloudfuse-api-key \
-     --from-literal=api-key=<your Kloudfuse API key> \
+     --from-literal=api-key='<your Kloudfuse API key>' \
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
@@ -64,12 +64,11 @@ Cluster-level data has the node's host attributes removed, so deployments, event
 
 ## Verify
 
-If no pods appear and every node is tainted, uncomment the `tolerations` block in `helm-values.yaml` and install again.
-
-- `kubectl -n otel get pods -l app.kubernetes.io/instance=kloudfuse-otel` shows one pod per node.
+- `kubectl -n otel get pods -l app.kubernetes.io/instance=kloudfuse-otel -o wide` shows one pod on every node you expect. A node with a `NoSchedule` or `NoExecute` taint gets no pod, and so sends no logs or metrics, until you uncomment the `tolerations` block in `helm-values.yaml` and install again.
 - In Kloudfuse, filter metrics by `kube_cluster_name="<cluster-name>"` and `kf_metrics_agent="otlp"`.
 - *Infrastructure > Kubernetes* lists the cluster's objects; filter by `kf_infra_agent=otlp`.
-- Kubernetes events are in *Logs* with `kf_events_agent="otlp"`.
+- Kubernetes events are in *Events* with `kf_events_agent="otlp"`.
+- If the pods run but no data arrives and your Kloudfuse requires an API key, check that the Secret `kloudfuse-api-key` exists in the `otel` namespace. The Collector starts without it, so a missing or wrong key shows only as rejected requests in the Collector's log.
 
 ## Tear down
 

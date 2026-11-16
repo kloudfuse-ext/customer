@@ -29,7 +29,7 @@
 #      These commands can be run again to change the key:
 #        kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -
 #        kubectl -n otel create secret generic kloudfuse-api-key \
-#          --from-literal=api-key=<your Kloudfuse API key> \
+#          --from-literal=api-key='<your Kloudfuse API key>' \
 #          --dry-run=client -o yaml | kubectl apply -f -
 #      After changing the key, restart the Collector pods:
 #        kubectl -n otel rollout restart daemonset -l app.kubernetes.io/instance=kloudfuse-otel
@@ -55,7 +55,9 @@ extraEnvs:
   - name: KLOUDFUSE_ENDPOINT
     value: "https://<kloudfuse-hostname>"
   # 2. Your Kloudfuse API key. optional: true lets the Collector start without
-  #    the Secret when ingestion authentication is not enabled.
+  #    the Secret when ingestion authentication is not enabled. If your
+  #    Kloudfuse requires a key and the Secret is missing, the pods still start
+  #    and Kloudfuse rejects what they send: check the Collector's log.
   - name: KLOUDFUSE_API_KEY
     valueFrom:
       secretKeyRef:
