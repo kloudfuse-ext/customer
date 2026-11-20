@@ -1,40 +1,41 @@
 # key exists
 
-Facet presence filter operator. Selects log lines where a specific facet key is present, regardless of the value it holds. In regular search, use the `key exists` keyword syntax; in advanced search, reference the facet name with the `@` prefix alone.
+Facet presence filter operator. Selects log lines where a specific facet key is present, regardless of the value it holds. Write the facet name with the `@` prefix and a type suffix, such as `@logger:string`. Prefix it with `!` to select log lines where the facet is absent.
 
 ## Syntax
 
-**Regular search:**
+**Key exists:**
 ```fuseql
-key exists="facetName"
+@facetName:type
 ```
 
-**Advanced search:**
+**Key absent:**
 ```fuseql
-@facetName
+!@facetName:type
 ```
 
 ## Parameters
 
 | Parameter | Required | Description |
 |---|---|---|
-| `facetName` | Yes | The name of the facet whose presence to check. In regular search, quoted as a string value; in advanced search, prefixed with `@`. |
+| `facetName` | Yes | The name of the facet whose presence to check, prefixed with `@`. |
+| `type` | Yes | The facet's data type, such as `string` or `number`. The suffix is required; `@facetName` alone is a syntax error. |
 
 ## Example
 
-Return log lines that have a `user_agent_original` facet (any value).
+Count grafana log lines that have a `logger` facet, with any value.
 
 ```fuseql
-source="nginx" @user_agent_original | count by kube_namespace
+source="grafana" and @logger:string | count
 ```
 
-**Expected output (illustrative):**
+**Expected output:**
 
-| kube_namespace | _count |
-|---|---|
-| kfuse-ingress | ~2,300,000 |
+| _count |
+|---|
+| 365,253 |
 
-Values shown are illustrative; actual output depends on your data.
+`source="grafana" and !@logger:string | count` returns the rest (405,841 in the same window); the two counts add up to the source's total (771,094).
 
 ### API Call
 
@@ -42,11 +43,11 @@ Values shown are illustrative; actual output depends on your data.
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" @user_agent_original | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"grafana\\\" and @logger:string | count\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes
 
-- Use `key exists` to identify log lines enriched with a specific facet, or to find entries from agents or integrations that emit a particular field.
-- Combine with value operators to narrow results: `@user_agent_original and @user_agent_original!~".*bot.*"`.
-- The advanced search form (`@facetName` alone) is the most concise way to express facet presence.
+- The type suffix is required but does not narrow the match: `@logger:string`, `@logger:number`, and any other suffix select the same log lines. Use `:string` unless you know the facet's type. Verified against Kloudfuse 4.4.0.
+- The `key exists="facetName"` form is a syntax error; use `@facetName:type`.
+- Combine with value operators to narrow results: `@logger:string and @logger!~".*ngalert.*"`.

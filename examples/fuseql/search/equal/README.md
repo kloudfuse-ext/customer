@@ -21,7 +21,7 @@ label="value"
 Select nginx access logs from a specific Kubernetes namespace and count by namespace.
 
 ```fuseql
-source="nginx" kube_namespace="kfuse" | count by kube_namespace
+source="nginx" and kube_namespace="kfuse" | count by kube_namespace
 ```
 
 **Expected output:**
@@ -36,7 +36,7 @@ source="nginx" kube_namespace="kfuse" | count by kube_namespace
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" kube_namespace=\\\"kfuse\\\" | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and kube_namespace=\\\"kfuse\\\" | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes

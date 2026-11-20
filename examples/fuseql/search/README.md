@@ -23,9 +23,8 @@ Search operators are used in the **filter expression** before the first `|` pipe
 | `!"text"` | `!"substring"` | Exclude grep matches |
 | `term` | `word` | Token search (whole words) |
 | `!term` | `!word` | Exclude token matches |
-| `@facet` | `@facet` | Key exists (facet is present) |
-| `==` | `@facet=="value"` | Facet term exact match |
-| `!==` | `@facet!=="value"` | Facet term does not match |
+| `@facet:type` | `@facet:string` | Key exists (facet is present); `!@facet:string` for absent. The type suffix is required |
+| `__kf_fp_hash` | `__kf_fp_hash="hash"` | Fingerprint hash match; also `!=` and `in (...)`. See [fingerprint](fingerprint/) |
 
 ## Key Observations
 

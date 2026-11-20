@@ -21,7 +21,7 @@ label**"substring"
 Return logs from deployments whose name contains `ingress-ingress`.
 
 ```fuseql
-source="nginx" kube_deployment**"ingress-ingress" | count by kube_deployment
+source="nginx" and kube_deployment**"ingress-ingress" | count by kube_deployment
 ```
 
 **Expected output:**
@@ -36,7 +36,7 @@ source="nginx" kube_deployment**"ingress-ingress" | count by kube_deployment
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" kube_deployment**\\\"ingress-ingress\\\" | count by kube_deployment\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and kube_deployment**\\\"ingress-ingress\\\" | count by kube_deployment\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes
