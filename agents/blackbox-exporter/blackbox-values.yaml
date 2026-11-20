@@ -1,0 +1,59 @@
+# Prometheus Blackbox Exporter — probe modules
+#
+# Deploy:
+#   helm upgrade --install blackbox prometheus-community/prometheus-blackbox-exporter \
+#     -f blackbox-values.yaml --namespace monitoring --create-namespace
+#
+# Service: blackbox-prometheus-blackbox-exporter.monitoring:9115
+
+config:
+  modules:
+    http_2xx:
+      prober: http
+      timeout: 5s
+      http:
+        valid_status_codes: []     # empty means any 2xx
+        follow_redirects: true
+        preferred_ip_protocol: ip4
+    http_post_2xx:
+      prober: http
+      timeout: 5s
+      http:
+        method: POST
+        headers:
+          Content-Type: application/json
+        body: '{}'
+    http_body_match:
+      prober: http
+      timeout: 5s
+      http:
+        fail_if_body_not_matches_regexp:
+          - '"status":\s*"ok"'
+    tcp_connect:
+      prober: tcp
+      timeout: 5s
+    icmp:
+      prober: icmp
+      timeout: 5s
+      icmp:
+        preferred_ip_protocol: ip4
+    dns_a:
+      prober: dns
+      timeout: 5s
+      dns:
+        query_name: example.com
+        query_type: A
+        valid_rcodes: [NOERROR]
+    grpc_health:
+      prober: grpc
+      timeout: 5s
+      grpc:
+        tls: true
+        service: ""
+
+# ICMP: the exporter runs as non-root (UID/GID 1000), so NET_RAW alone does not
+# work. Allow unprivileged ICMP sockets for every group in the pod instead.
+podSecurityContext:
+  sysctls:
+    - name: net.ipv4.ping_group_range
+      value: "0 2147483647"

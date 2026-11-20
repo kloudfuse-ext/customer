@@ -1,0 +1,73 @@
+# OpenTelemetry Collector — Blackbox Exporter probes → Kloudfuse via OTLP
+#
+# Runs as a single-replica Deployment: in a DaemonSet every pod would run the
+# scrape jobs, probing each target once per node and duplicating the series.
+#
+# Deploy (after blackbox-values.yaml):
+#   helm upgrade --install otel-blackbox open-telemetry/opentelemetry-collector \
+#     -f otel/helm-values.yaml --namespace monitoring
+#
+# Replace <kloudfuse-hostname>; set Kf-Api-Key if ingestion auth is enabled.
+
+mode: deployment
+replicaCount: 1
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+config:
+  receivers:
+    prometheus/blackbox:
+      config:
+        scrape_configs:
+          - job_name: otel-blackbox-http
+            metrics_path: /probe
+            scrape_interval: 30s
+            params:
+              module: [http_2xx]
+            static_configs:
+              - targets:
+                  - https://example.com
+                  - https://httpbin.org/status/200
+                labels:
+                  probe_group: public-endpoints
+            relabel_configs:
+              - source_labels: [__address__]
+                target_label: __param_target
+              - source_labels: [__param_target]
+                target_label: instance
+              - target_label: __address__
+                replacement: blackbox-prometheus-blackbox-exporter.monitoring:9115
+
+  processors:
+    # The prometheus receiver moves job and instance to the service.name and
+    # service.instance.id resource attributes, and splits URL targets into
+    # meaningless server.address/server.port values. Restore job and instance
+    # so the series match those from Prometheus remote write.
+    transform/blackbox:
+      metric_statements:
+        - context: datapoint
+          statements:
+            - set(datapoint.attributes["job"], resource.attributes["service.name"])
+            - set(datapoint.attributes["instance"], resource.attributes["service.instance.id"])
+    resource/blackbox:
+      attributes:
+        - key: server.address
+          action: delete
+        - key: server.port
+          action: delete
+        - key: url.scheme
+          action: delete
+
+  exporters:
+    otlp_http/kloudfuse:
+      metrics_endpoint: https://<kloudfuse-hostname>/ingester/otlp/metrics
+      # headers:
+      #   Kf-Api-Key: <api-key>
+
+  service:
+    pipelines:
+      metrics/blackbox:
+        receivers: [prometheus/blackbox]
+        processors: [memory_limiter, resource/blackbox, transform/blackbox, batch]
+        exporters: [otlp_http/kloudfuse]

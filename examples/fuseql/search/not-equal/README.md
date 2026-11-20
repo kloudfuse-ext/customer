@@ -21,7 +21,7 @@ label!="value"
 Return all nginx logs except those at the `info` level.
 
 ```fuseql
-source="nginx" level!="info" | count by level
+source="nginx" and level!="info" | count by level
 ```
 
 **Expected output (illustrative):**
@@ -39,7 +39,7 @@ Values shown are illustrative; actual output depends on your data.
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" level!=\\\"info\\\" | count by level\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and level!=\\\"info\\\" | count by level\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes

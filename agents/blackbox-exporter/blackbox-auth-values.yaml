@@ -1,0 +1,25 @@
+# Authenticated HTTP probes — Bearer token read from a mounted Secret.
+#
+# Create the Secret, then apply on top of the base values:
+#   kubectl -n monitoring create secret generic blackbox-probe-auth \
+#     --from-literal=token=<bearer-token>
+#   helm upgrade --install blackbox prometheus-community/prometheus-blackbox-exporter \
+#     -f blackbox-values.yaml -f blackbox-auth-values.yaml --namespace monitoring
+#
+# Helm replaces lists and merges maps, so this file only adds the http_bearer module.
+
+config:
+  modules:
+    http_bearer:
+      prober: http
+      timeout: 5s
+      http:
+        authorization:
+          type: Bearer
+          credentials_file: /etc/blackbox/auth/token
+
+extraSecretMounts:
+  - name: probe-auth
+    mountPath: /etc/blackbox/auth
+    secretName: blackbox-probe-auth
+    readOnly: true

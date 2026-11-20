@@ -60,6 +60,7 @@ R=$(curl -s -H "Authorization: Bearer $TOKEN" \
      -X POST "https://$HOST/query" \
      -d "{\"query\": \"subscription { getLogsWithFuseQlStream(query: \\\"source=\\\\\\\"grafana\\\\\\\" | limit 2\\\", startTs: \\\"$START\\\", endTs: \\\"$END\\\", cursor: null) { ColumnHeaders TableResult Cursor } }\"}")
 check "getLogsWithFuseQlStream — ColumnHeaders present"  "$R" '"timestamp"'
+check "getLogsWithFuseQlStream — ColumnHeaders has __kf_fp_hash" "$R" '"__kf_fp_hash"'
 check "getLogsWithFuseQlStream — Cursor returned"        "$R" '"Cursor"'
 
 # 4. getLogsWithFuseQlStream — pagination with cursor

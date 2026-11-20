@@ -1,0 +1,22 @@
+# Prometheus Operator Probe resource — targets managed separately from the exporter.
+#
+#   kubectl apply -f prometheus-operator/probe.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: public-endpoints
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  interval: 30s
+  module: http_2xx
+  prober:
+    url: blackbox-prometheus-blackbox-exporter.monitoring:9115
+  targets:
+    staticConfig:
+      static:
+        - https://example.com
+        - https://httpbin.org/status/200
+      labels:
+        probe_group: public-endpoints

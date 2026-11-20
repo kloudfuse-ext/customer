@@ -1,0 +1,21 @@
+# ServiceMonitor for the metrics-demo Service.
+#
+#   kubectl apply -f servicemonitor.yaml
+#
+# The release label must match the Prometheus serviceMonitorSelector —
+# kube-prometheus-stack selects release: <helm-release-name> by default.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: metrics-demo
+  namespace: <NAMESPACE>
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: metrics-demo
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s

@@ -20,7 +20,7 @@ Numeric comparison filter operator. Selects log lines where a numeric facet valu
 Return nginx logs where the HTTP status code indicates a server error (status > 499).
 
 ```fuseql
-source="nginx" @http_status>499 | count by kube_namespace
+source="nginx" and @http_status>499 | count by kube_namespace
 ```
 
 **Expected output (illustrative):**
@@ -37,7 +37,7 @@ Values shown are illustrative; actual output depends on your data.
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" @http_status>499 | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and @http_status>499 | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes

@@ -1,15 +1,15 @@
 # and
 
-Intersection operator (AND logic) between two search filter conditions. Selects only log lines that satisfy both conditions simultaneously. In regular search, AND is implied by writing two conditions side by side; in advanced search, write the keyword `and` explicitly.
+Intersection operator (AND logic) between two search filter conditions. Selects only log lines that satisfy both conditions simultaneously. Write the keyword `and` between the conditions; it is required, and `AND` also works.
 
 ## Syntax
 
-**Regular search (implied AND):**
+**Labels:**
 ```fuseql
-label1="value1" label2="value2"
+label1="value1" and label2="value2"
 ```
 
-**Advanced search:**
+**Facets:**
 ```fuseql
 @facet1="value1" and @facet2="value2"
 ```
@@ -23,10 +23,10 @@ label1="value1" label2="value2"
 
 ## Example
 
-Filter nginx logs to show only `info`-level entries from the nginx source.
+Count nginx logs at `info` level, grouped by namespace.
 
 ```fuseql
-source="nginx" level="info" | count by kube_namespace
+source="nginx" and level="info" | count by kube_namespace
 ```
 
 **Expected output:**
@@ -42,11 +42,10 @@ source="nginx" level="info" | count by kube_namespace
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" level=\\\"info\\\" | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and level=\\\"info\\\" | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes
 
-- In regular search, placing two conditions side by side is equivalent to AND — no keyword is needed.
-- In advanced search mode (using `@` for facets), use the lowercase keyword `and`.
+- Conditions are not combined implicitly. Writing two conditions side by side without `and`, such as `source="nginx" level="info"`, fails with `syntax error` in the Logs *Code* input and in aggregation queries (`getLogMetricsResultWithKfuseQl`). A raw log query (`getLogsWithFuseQlStream`) returns no rows and no error. Verified against Kloudfuse 4.4.0.
 - Parentheses can group compound expressions: `(source="nginx" and level="info") or source="nginx-error"`.

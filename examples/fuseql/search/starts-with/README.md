@@ -21,7 +21,7 @@ label*~"prefix"
 Return logs from containers whose name starts with `kfuse`.
 
 ```fuseql
-source="nginx" kube_container_name*~"kfuse" | count by kube_container_name
+source="nginx" and kube_container_name*~"kfuse" | count by kube_container_name
 ```
 
 **Expected output (illustrative):**
@@ -39,7 +39,7 @@ Values shown are illustrative; actual output depends on your data.
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" kube_container_name*~\\\"kfuse\\\" | count by kube_container_name\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and kube_container_name*~\\\"kfuse\\\" | count by kube_container_name\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes

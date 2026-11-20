@@ -21,7 +21,7 @@ label!~"pattern"
 Return nginx logs from namespaces that do not contain `kfuse`.
 
 ```fuseql
-source="nginx" kube_namespace!~"kfuse.*" | count by kube_namespace
+source="nginx" and kube_namespace!~"kfuse.*" | count by kube_namespace
 ```
 
 **Expected output (illustrative):**
@@ -38,7 +38,7 @@ Values shown are illustrative; actual output depends on your data.
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" kube_namespace!~\\\"kfuse.*\\\" | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" and kube_namespace!~\\\"kfuse.*\\\" | count by kube_namespace\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes

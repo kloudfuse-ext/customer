@@ -1,0 +1,80 @@
+# Prometheus — Blackbox Exporter probes → Kloudfuse via remote write
+#
+# Deploy (after blackbox-values.yaml):
+#   helm upgrade --install prometheus-blackbox prometheus-community/prometheus \
+#     -f prometheus/helm-values.yaml --namespace monitoring
+#
+# Replace <kloudfuse-hostname>; add an authorization block if ingestion auth is enabled.
+
+serverFiles:
+  prometheus.yml:
+    remote_write:
+      - url: https://<kloudfuse-hostname>/ingester/write
+        # authorization:
+        #   credentials: <token>
+        queue_config:
+          max_samples_per_send: 4000
+
+    scrape_configs:
+      - job_name: blackbox-http
+        metrics_path: /probe
+        scrape_interval: 30s
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+              - https://example.com
+              - https://httpbin.org/status/200
+              - https://does-not-exist.invalid      # fails on purpose
+            labels:
+              probe_group: public-endpoints
+        relabel_configs: &blackbox_relabel
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-prometheus-blackbox-exporter.monitoring:9115
+
+      - job_name: blackbox-tcp
+        metrics_path: /probe
+        scrape_interval: 30s
+        params:
+          module: [tcp_connect]
+        static_configs:
+          - targets:
+              - <kloudfuse-hostname>:443
+        relabel_configs: *blackbox_relabel
+
+      - job_name: blackbox-icmp
+        metrics_path: /probe
+        scrape_interval: 30s
+        params:
+          module: [icmp]
+        static_configs:
+          - targets:
+              - 8.8.8.8
+        relabel_configs: *blackbox_relabel
+
+      - job_name: blackbox-dns
+        metrics_path: /probe
+        scrape_interval: 30s
+        params:
+          module: [dns_a]
+        static_configs:
+          - targets:
+              - 8.8.8.8:53
+        relabel_configs: *blackbox_relabel
+
+# Drop the chart's default Kubernetes and self-scrape jobs (defined under
+# scrapeConfigs) so that only probe results are sent to Kloudfuse.
+scrapeConfigs: null
+
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false

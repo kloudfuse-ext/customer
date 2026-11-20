@@ -1,15 +1,15 @@
 # or
 
-Union operator (OR logic) between two search filter conditions. Selects log lines that satisfy at least one of the conditions. In regular search, express OR using a quoted `OR` inside a field value; in advanced search, write the keyword `or` between two full expressions.
+Union operator (OR logic) between two search filter conditions. Selects log lines that satisfy at least one of the conditions. Write the keyword `or` between two full conditions; `OR` also works.
 
 ## Syntax
 
-**Regular search:**
+**Labels:**
 ```fuseql
-label="valueA OR valueB"
+label="valueA" or label="valueB"
 ```
 
-**Advanced search:**
+**Facets:**
 ```fuseql
 @facet="valueA" or @facet="valueB"
 ```
@@ -23,20 +23,18 @@ label="valueA OR valueB"
 
 ## Example
 
-Return log lines from the nginx source (regular search OR example).
+Count grafana logs whose level is either `info` or `warn`.
 
 ```fuseql
-source="nginx" level="info OR warning" | count by level
+source="grafana" and (level="info" or level="warn") | count by level
 ```
 
-**Expected output (illustrative):**
+**Expected output:**
 
 | level | _count |
 |---|---|
-| info | 316,858 |
-| warning | ~1,200 |
-
-Values shown are illustrative; actual output depends on your data.
+| warn | 206 |
+| info | 540,664 |
 
 ### API Call
 
@@ -44,11 +42,11 @@ Values shown are illustrative; actual output depends on your data.
 curl -s -X POST "https://<kloudfuse-hostname>/query" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"nginx\\\" level=\\\"info OR warning\\\" | count by level\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
+  -d '{"query": "{ getLogMetricsResultWithKfuseQl(query: \"source=\\\"grafana\\\" and (level=\\\"info\\\" or level=\\\"warn\\\") | count by level\", startTs: \"<ISO_START>\", endTs: \"<ISO_END>\") { ColumnHeaders AggrValues GroupKeys TableResult } }"}'
 ```
 
 ## Notes
 
-- In regular search, the `OR` keyword must appear inside the quoted value string: `level="info OR warning"`.
-- In advanced search, use lowercase `or` between two `@facet` expressions: `@level="info" or @level="warning"`.
-- Use parentheses to control precedence when mixing `or` with `and`.
+- Write each alternative as a full condition. A single quoted value such as `level="info OR warn"` is matched literally, so it returns no log lines. Verified against Kloudfuse 4.4.0.
+- Use parentheses to group the alternatives. Without them, `source="grafana" and level="info" or level="warn"` is read as `(source="grafana" and level="info") or level="warn"`, so it also returns `warn` lines from every other source.
+- `level` (a label) and `@level` (a facet) can match different sets of logs. Use the same one on both sides of `or`.
