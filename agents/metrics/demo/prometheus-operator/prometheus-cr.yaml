@@ -1,0 +1,69 @@
+# Prometheus custom resource with remote write to Kloudfuse — for clusters that run
+# Prometheus Operator without the kube-prometheus-stack chart.
+#
+# Prerequisites:
+#   Prometheus Operator and its CRDs installed (for example, by kube-prometheus-stack
+#   or the prometheus-operator bundle).
+#   kubectl -n monitoring create secret generic kloudfuse-ingest --from-literal=token=<token>
+#
+# Deploy:
+#   kubectl apply -f prometheus-cr.yaml
+#
+# Replace <kloudfuse-hostname>. If ingestion auth is not enabled, remove the
+# authorization block and skip the Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-kloudfuse
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-kloudfuse
+rules:
+  - apiGroups: [""]
+    resources: [services, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-kloudfuse
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-kloudfuse
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-kloudfuse
+    namespace: monitoring
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus-kloudfuse
+  namespace: monitoring
+spec:
+  serviceAccountName: prometheus-kloudfuse
+  serviceMonitorSelector:
+    matchLabels:
+      release: kube-prometheus-stack
+  serviceMonitorNamespaceSelector: {}   # all namespaces
+  remoteWrite:
+    - url: https://<kloudfuse-hostname>/ingester/write
+      authorization:
+        credentials:                    # a Secret key reference, not the token itself
+          name: kloudfuse-ingest
+          key: token
+      queueConfig:
+        maxSamplesPerSend: 4000
+      sendNativeHistograms: true        # Prometheus 2.40+ and Kloudfuse 3.4.3+
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "<NODE_LABEL>"
+      effect: "NoSchedule"

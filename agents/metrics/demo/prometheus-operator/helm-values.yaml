@@ -1,0 +1,77 @@
+# kube-prometheus-stack — Metrics → Kloudfuse via Remote Write (Prometheus Operator)
+#
+# Deploys Prometheus Operator and one Prometheus instance using the
+# prometheus-community/kube-prometheus-stack Helm chart. Scrapes the metrics-demo
+# Service through servicemonitor.yaml and forwards metrics to Kloudfuse via
+# Prometheus remote write.
+#
+# Prerequisites:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   kubectl create namespace monitoring
+#   kubectl -n monitoring create secret generic kloudfuse-ingest --from-literal=token=<token>
+#
+# Deploy:
+#   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -f helm-values.yaml \
+#     --namespace monitoring
+#
+# Replace <kloudfuse-hostname>. If ingestion auth is not enabled, remove the
+# authorization block and skip the Secret.
+
+prometheus:
+  prometheusSpec:
+    remoteWrite:
+      - url: https://<kloudfuse-hostname>/ingester/write
+        authorization:
+          credentials:              # a Secret key reference, not the token itself
+            name: kloudfuse-ingest
+            key: token
+        queueConfig:
+          maxSamplesPerSend: 4000
+        sendNativeHistograms: true  # Prometheus 2.40+ and Kloudfuse 3.4.3+
+    tolerations:
+      - key: "owner"
+        operator: "Equal"
+        value: "<NODE_LABEL>"
+        effect: "NoSchedule"
+
+prometheusOperator:
+  tolerations:
+    - key: "owner"
+      operator: "Equal"
+      value: "<NODE_LABEL>"
+      effect: "NoSchedule"
+  admissionWebhooks:
+    patch:
+      tolerations:
+        - key: "owner"
+          operator: "Equal"
+          value: "<NODE_LABEL>"
+          effect: "NoSchedule"
+
+# Disable components not needed for this demo
+grafana:
+  enabled: false
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
+defaultRules:
+  create: false
+kubeApiServer:
+  enabled: false
+kubelet:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+coreDns:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false

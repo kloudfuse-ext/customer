@@ -1,0 +1,43 @@
+# kube-prometheus-stack — minimal install for Blackbox Exporter probes → Kloudfuse
+#
+# Deploy:
+#   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -f prometheus-operator/kube-prometheus-stack-values.yaml --namespace monitoring
+#
+# Only Prometheus and the operator are enabled. Replace <kloudfuse-hostname>.
+
+prometheus:
+  prometheusSpec:
+    remoteWrite:
+      - url: https://<kloudfuse-hostname>/ingester/write
+        # authorization:
+        #   credentials:
+        #     name: kloudfuse-ingest     # Secret with the API key
+        #     key: token
+        queueConfig:
+          maxSamplesPerSend: 4000
+
+grafana:
+  enabled: false
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
+defaultRules:
+  create: false
+kubeApiServer:
+  enabled: false
+kubelet:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+coreDns:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false

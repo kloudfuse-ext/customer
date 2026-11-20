@@ -1,0 +1,22 @@
+# Blackbox Exporter chart ServiceMonitor targets — one ServiceMonitor per target.
+#
+# Apply on top of the base values:
+#   helm upgrade --install blackbox prometheus-community/prometheus-blackbox-exporter \
+#     -f blackbox-values.yaml -f prometheus-operator/blackbox-servicemonitor-values.yaml \
+#     --namespace monitoring
+
+serviceMonitor:
+  enabled: true
+  defaults:
+    interval: 30s
+    module: http_2xx
+    labels:
+      release: kube-prometheus-stack    # matches the Prometheus serviceMonitorSelector
+  targets:
+    - name: sm-example
+      url: https://example.com
+    - name: sm-httpbin
+      url: https://httpbin.org/status/200
+    - name: sm-kloudfuse-tcp
+      url: <kloudfuse-hostname>:443
+      module: tcp_connect
